@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# run artefacts: accounts, credentials, ledger, mail dumps, snapshots
+output/
+*.local.json
+config.json
+
+# editors
+.idea/
+.vscode/

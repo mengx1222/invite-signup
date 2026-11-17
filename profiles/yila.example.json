@@ -1,0 +1,68 @@
+{
+  "site": "yila.ai",
+  "base_url": "https://yila.ai",
+  "invite_url": "https://yila.ai/en/invite/YL-EXAMPLE00",
+  "invite_code": "YL-EXAMPLE00",
+  "invite_valid": true,
+  "reward_credits": 200,
+  "has_reward_slots": true,
+  "inviter_name": "",
+  "max_successful_invites": null,
+  "remaining_invites": null,
+  "attribution": {
+    "kind": "cookie",
+    "name": "yila_invite_code",
+    "source": "server sets the cookie when the invite landing page is fetched"
+  },
+  "verification": {
+    "mode": "link",
+    "sample": "/api/auth/verify-email?token=",
+    "pattern": "https?://[^\\s\\\"'<>\\\\]*yila\\.ai/api/auth/verify-email[^\\s\\\"'<>\\\\]*",
+    "resend_endpoint": "",
+    "notes": "the mail carries a link; /verify-email has no code input and polls get-session"
+  },
+  "captcha": "none",
+  "steps": [
+    "email",
+    "password"
+  ],
+  "selectors": {
+    "email": "input[type=\"email\"]",
+    "password": "#invite-password",
+    "confirm_password": "#invite-confirm-password",
+    "submit": "button[type=\"submit\"]"
+  },
+  "selector_stability": {},
+  "endpoints": {
+    "check-email": "/api/referral/check-email",
+    "sign-up": "/api/auth/sign-up/email",
+    "send-verification": "/api/auth/send-verification-email",
+    "verify": "/api/auth/verify-email",
+    "session": "/api/auth/get-session",
+    "credits": "/api/credits",
+    "referral": "/api/referral/me"
+  },
+  "endpoints_state": {
+    "credits": "/api/credits",
+    "referral": "/api/referral/me"
+  },
+  "sign_in_endpoint": "/api/auth/sign-in/email",
+  "sign_in_fields": {},
+  "endpoint_fields": {
+    "check-email": {
+      "email": "email",
+      "referralCode": "referralCode"
+    },
+    "sign-up": {
+      "email": "email",
+      "password": "password"
+    },
+    "sign-in": {
+      "email": "email",
+      "password": "password"
+    }
+  },
+  "locale": "en-US",
+  "notes": "Verified end to end on 2026-11-17: 27.9 s, no captcha, link-based verification, 500 credits granted as a single signup_bonus grant. Registration is only reachable through an invite landing page.",
+  "probed_at": "2026-11-17"
+}

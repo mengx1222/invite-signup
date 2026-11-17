@@ -1,0 +1,21 @@
+{
+  "locale": "en-US",
+  "output_dir": "./output",
+  "browser": {
+    "headless": true,
+    "channel": "chrome"
+  },
+  "mailbox": {
+    "provider_order": ["mail.tm", "tempmail.io", "guerrillamail"],
+    "poll_timeout_secs": 120
+  },
+  "limits": {
+    "max_accounts_per_invite": 1,
+    "require_manual_confirmation_over": 1
+  },
+  "safety": {
+    "tos_forbids_automation": false,
+    "stop_on_captcha": true,
+    "never_fabricate_mailbox_on_real_domains": true
+  }
+}
