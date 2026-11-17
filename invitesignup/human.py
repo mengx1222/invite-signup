@@ -16,7 +16,15 @@ from playwright.sync_api import Locator, Page
 
 def human_type(page: Page, target: Union[str, Locator], text: str,
                min_delay: float = 0.03, max_delay: float = 0.09) -> None:
-    """Type character by character with a slightly irregular cadence."""
+    """Type character by character with a slightly irregular cadence.
+
+    ``press_sequentially`` is used on purpose.  It was checked against a real
+    password containing ``+ - ! @ # $ % & * _ =`` and reproduces the string
+    exactly, while also emitting ``keydown`` / ``keypress`` per character.
+    ``insert_text`` would insert the same text but fires only one ``keydown``
+    for the whole string, which is *less* like a human typing -- so it is
+    deliberately not used here.
+    """
     loc = page.locator(target) if isinstance(target, str) else target
     loc.wait_for(state="visible", timeout=15000)
     loc.scroll_into_view_if_needed()

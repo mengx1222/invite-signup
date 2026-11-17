@@ -309,3 +309,78 @@ received_at=float(m.get("createdAt") or 0) / 1000.0
 site_rejected / captcha / mail_timeout / config / verification / unknown），
 再按 `mail_requested` 这个阶段标志决定 `Action`（retry / stop / abort）。
 未分类的错误**默认不重试**。
+
+---
+
+## 17. 台账只在"最后一行"写，等于大部分失败**没有记录**
+
+**症状**：翻 `ledger.jsonl` 发现失败记录远少于实际尝试次数；被 verdict 拦下的、
+去重跳过的、配额挡住的，一条都没有。
+
+**根因**：`run_registration()` 里有十几个守卫分支各自 `return result`，
+而台账写入写在函数**最后**。于是每一个提前返回都跳过了持久化。
+这不是"少写一行日志"，是让去重键和配额计数**失去了输入**——
+`already_done()` 永远查不到失败，配额也永远算不准。
+
+**处置**：拆成两层——
+
+```
+run_registration()   ← 只做一件事：调 _attempt()，然后无条件 _persist()
+  └── _attempt()     ← 真正的流程，允许随便 return
+```
+
+外层保证"无论走哪条路，都写且只写一行"。`_persist()` 自己再包一层
+`try/except`，台账写失败不能把整个运行拖垮。
+
+**测试**：`tests/test_runner_ledger.py` 用 4 条用例覆盖被拦截 / 配额 / 去重 /
+缺选择器四种提前返回，全部断言"台账多了一行"。
+
+---
+
+## 18. 判"有没有验证码"，**可见性**和"存在性"是两件事
+
+**症状**：探站说 `automatable`，跑起来立刻 `blocked-by-captcha`，自相矛盾。
+
+**根因**：`_live_captcha()` 只用 `locator(...).count()` 判断元素存不存在。
+但验证码厂商习惯在 DOM 里**常驻一个隐藏容器**
+（`<div id="cf-turnstile-xxx" style="display:none">`，或零尺寸的 wrapper），
+只有站点真决定挑战时才把它显示出来。
+
+于是两侧口径打架：
+
+| 侧 | 判据 | 结论 |
+| :--- | :--- | :--- |
+| `verdict` | bundle 里有关键词 → 只标 `suspected`，**放行** | automatable |
+| `_live_captcha` | DOM 里有元素 → **拦** | blocked |
+
+**处置**：`_live_captcha()` 逐元素 `is_visible()`，只认**可见**的挑战。
+选择器也收窄了：去掉 `script[src*=...]`（脚本存在不等于有挑战），
+保留 iframe / 可见 widget 容器。
+
+**测试**：`tests/test_live_captcha.py` 用真实 headless 浏览器跑 5 条——
+隐藏容器不算、零尺寸不算、可见 Turnstile/hCaptcha 算、干净页面不算。
+
+---
+
+## 19. 一次**错误**的"修复"：`press_sequentially` 其实是对的
+
+**我一度以为的 bug**：`press_sequentially` 会把每个字符当 xdotool 的键名解析，
+密码里的 `+` `-` 会变成修饰键组合，输入内容错乱。
+
+**实测结果**：用 `Ab+cd-Ef!g@h#i$j%k&l*m_n=o+p` 实测，
+`press_sequentially` **逐字符还原完全正确**。
+
+**但另一个差异是真的**：
+
+| 方式 | keydown | keypress | input |
+| :--- | :--- | :--- | :--- |
+| `press_sequentially` | 每字符 1 次 | 每字符 1 次 | 每字符 1 次 |
+| `keyboard.insert_text` | **整串只有 1 次** | 0 | 每字符 1 次 |
+
+`insert_text` 少了 `keydown`/`keypress`，站点若监听按键事件判断"真人打字"，
+它**更像脚本**。
+
+**结论**：不要改。已经把这条写进 `human.py` 的 docstring，避免下次有人
+（包括我自己）再"修"一遍。
+
+> 教训：**先测，再改**。这次的假设听起来很合理，但就是错的。

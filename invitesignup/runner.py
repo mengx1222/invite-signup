@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import ledger as ledger_mod
+from .failures import Action, classify
 from .human import apply_environment_consistency, click_first_enabled_non_google, human_click, human_type
 from .mailbox import Mailbox
 from .profile import SiteProfile
@@ -39,6 +40,8 @@ class RunResult:
     api_trace: List[str] = field(default_factory=list)
     verdict_state: str = ""
     notes: str = ""
+    failure_kind: str = ""
+    failure_action: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +55,8 @@ class RunResult:
             "errors": self.errors,
             "verdict_state": self.verdict_state,
             "notes": self.notes,
+            "failure_kind": self.failure_kind,
+            "failure_action": self.failure_action,
         }
 
 
@@ -82,12 +87,80 @@ def run_registration(
     tos_forbids_automation: bool = False,
     poll_timeout: int = 120,
 ) -> RunResult:
-    """Execute one registration described by ``profile``."""
-    from playwright.sync_api import sync_playwright
+    """Execute one registration described by ``profile``.
 
+    Thin wrapper whose only job is to guarantee a ledger row: whatever path
+    the inner attempt takes -- blocked, skipped, failed, or successful -- one
+    row is written before this returns.
+    """
     started = time.time()
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    key = ledger_mod.dedupe_key(profile.site, profile.invite_code)
+    book = ledger_mod.Ledger.open(out / "ledger.jsonl")
+
+    result = _attempt(
+        profile,
+        out=out,
+        key=key,
+        book=book,
+        email=email,
+        password=password,
+        allow_multi=allow_multi,
+        force=force,
+        headless=headless,
+        tos_forbids_automation=tos_forbids_automation,
+        poll_timeout=poll_timeout,
+    )
+    _classify_outcome(result)
+    _persist(book, profile, result, key, started, round(time.time() - started, 2))
+    return result
+
+
+def _classify_outcome(result: RunResult) -> None:
+    """Attach a retry verdict to a failed run.
+
+    The classification is advisory for a single run -- this function never
+    retries on its own -- but it is what a batch driver reads to decide
+    whether to continue.  Recording it means the decision is visible in the
+    ledger instead of being re-derived from an error string later.
+    """
+    if result.ok:
+        result.failure_kind = ""
+        result.failure_action = ""
+        return
+    text = "; ".join(result.errors) or result.stage
+    # A failure after the submit step means the site may already have created
+    # the account, which is exactly what flips "retry" into "abort".
+    mail_requested = result.stage not in (
+        "start", "landing", "email", "password", "blocked-by-verdict",
+        "skipped-duplicate", "blocked-by-quota", "mailbox-failed",
+    )
+    classification = classify(text, mail_requested=mail_requested)
+    result.failure_kind = classification.kind.value
+    result.failure_action = classification.action.value
+    if classification.action is Action.STOP and not result.notes:
+        result.notes = classification.reason
+
+
+def _attempt(
+    profile: SiteProfile,
+    *,
+    out: Path,
+    key: str,
+    book,
+    email: Optional[str],
+    password: Optional[str],
+    allow_multi: bool,
+    force: bool,
+    headless: bool,
+    tos_forbids_automation: bool,
+    poll_timeout: int,
+) -> RunResult:
+    """Do the work.  Never persists -- ``run_registration`` owns that."""
+    from playwright.sync_api import sync_playwright
+
+    started = time.time()
     result = RunResult()
 
     verdict = decide(profile, tos_forbids_automation=tos_forbids_automation)
@@ -99,8 +172,6 @@ def run_registration(
         return result
 
     # quota + dedupe
-    key = ledger_mod.dedupe_key(profile.site, profile.invite_code)
-    book = ledger_mod.Ledger.open(out / "ledger.jsonl")
     if not force and book.already_done(key):
         result.stage = "skipped-duplicate"
         result.errors.append(f"dedupe: {key} already completed")
@@ -286,27 +357,7 @@ def run_registration(
             except Exception:
                 pass
 
-    # --- persist ---
-    duration = round(time.time() - started, 2)
-    book.append({
-        "site": profile.site,
-        "invite_code": profile.invite_code,
-        "dedupe_key": key,
-        "verdict": result.verdict_state,
-        "outcome": "success" if result.ok else "failure",
-        "stage": result.stage,
-        "email": result.email,
-        "verified": result.verified,
-        "reward_credits": profile.reward_credits,
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
-        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "duration_s": duration,
-        "snapshot": result.snapshot,
-        "mail_dump": result.mail_dump,
-        "last_error": "; ".join(result.errors[-3:]) if result.errors else "",
-        "notes": result.notes,
-    })
-
+    # The ledger row is written by run_registration(), which owns persistence.
     if result.ok:
         accounts = out / "accounts.jsonl"
         with open(accounts, "a", encoding="utf-8") as f:
@@ -322,31 +373,88 @@ def run_registration(
     return result
 
 
+def _persist(book, profile: SiteProfile, result: RunResult, key: str,
+             started: float, duration: float) -> None:
+    """Write exactly one ledger row for this attempt.
+
+    Every exit path must land here.  The first version returned early from
+    about a dozen guard clauses, which meant a blocked or failed run left no
+    trace at all -- the ledger silently under-counted attempts and the
+    dedupe/quota logic had nothing to read.
+    """
+    try:
+        book.append({
+            "site": profile.site,
+            "invite_code": profile.invite_code,
+            "dedupe_key": key,
+            "verdict": result.verdict_state,
+            "outcome": "success" if result.ok else "failure",
+            "stage": result.stage,
+            "email": result.email,
+            "verified": result.verified,
+            "reward_credits": profile.reward_credits,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "duration_s": duration,
+            "snapshot": result.snapshot,
+            "mail_dump": result.mail_dump,
+            "last_error": "; ".join(result.errors[-3:]) if result.errors else "",
+            "notes": result.notes,
+        })
+    except Exception as exc:  # the ledger must never take the run down with it
+        result.errors.append(f"ledger write failed: {type(exc).__name__}: {exc}")
+
+
 CAPTCHA_SELECTOR = (
     'iframe[src*="challenges.cloudflare.com" i], '
     'iframe[src*="hcaptcha" i], '
     'iframe[src*="recaptcha" i], '
-    'script[src*="hcaptcha" i], '
-    'script[src*="recaptcha" i], '
-    '[class*="captcha" i], [id*="turnstile" i]'
+    'iframe[title*="captcha" i], '
+    'iframe[title*="challenge" i], '
+    '[class*="captcha" i], [id*="turnstile" i], [class*="turnstile" i]'
 )
 
 
 def _live_captcha(page) -> str:
-    """Return the kind of captcha mounted in the live page, or an empty string."""
+    """Return the kind of captcha *currently visible*, or an empty string.
+
+    Visibility matters.  Captcha vendors routinely leave a hidden container in
+    the DOM (``<div id="cf-turnstile-...">`` with zero size, or a widget that
+    only renders once the site decides to challenge you), and a selector that
+    only checks for existence reports a challenge on pages that never show
+    one.  That would contradict ``verdict``, which treats a bundle keyword as
+    a mere suspicion -- the probe would say "automatable" and the run would
+    then block itself.
+    """
     try:
-        count = page.locator(CAPTCHA_SELECTOR).count()
+        candidates = page.locator(CAPTCHA_SELECTOR)
+        count = candidates.count()
     except Exception:
         return ""
     if not count:
         return ""
-    try:
-        srcs = page.evaluate(
-            """() => [...document.querySelectorAll('iframe[src]')].map(f => f.getAttribute('src') || '')"""
-        )
-    except Exception:
-        srcs = []
-    blob = " ".join(srcs).lower()
+
+    visible_srcs = []
+    for index in range(count):
+        element = candidates.nth(index)
+        try:
+            if not element.is_visible():
+                continue
+        except Exception:
+            continue
+        try:
+            src = element.get_attribute("src") or ""
+        except Exception:
+            src = ""
+        if src:
+            visible_srcs.append(src)
+        if not visible_srcs:
+            # A visible container with no src is still a challenge widget.
+            visible_srcs.append("<visible-widget>")
+
+    if not visible_srcs:
+        return ""
+    blob = " ".join(visible_srcs).lower()
     if "challenges.cloudflare.com" in blob:
         return "turnstile"
     if "hcaptcha" in blob:
