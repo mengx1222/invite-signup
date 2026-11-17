@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import ledger as ledger_mod
 from .failures import Action, classify
@@ -24,6 +24,20 @@ from .human import click_first_enabled_non_google, human_click, human_type, laun
 from .mailbox import Mailbox
 from .profile import SiteProfile
 from .verdict import decide
+
+# A progress sink.  The CLI leaves it None and reads the final RunResult; a
+# web front-end passes a callable and gets each stage change as it happens.
+EventFn = Callable[[str, Dict[str, Any]], None]
+
+
+def _emit(on_event: Optional[EventFn], kind: str, **payload: Any) -> None:
+    """Report progress without letting a broken listener break the run."""
+    if on_event is None:
+        return
+    try:
+        on_event(kind, payload)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -86,6 +100,7 @@ def run_registration(
     headless: bool = True,
     tos_forbids_automation: bool = False,
     poll_timeout: int = 120,
+    on_event: Optional[EventFn] = None,
 ) -> RunResult:
     """Execute one registration described by ``profile``.
 
@@ -111,9 +126,11 @@ def run_registration(
         headless=headless,
         tos_forbids_automation=tos_forbids_automation,
         poll_timeout=poll_timeout,
+        on_event=on_event,
     )
     _classify_outcome(result)
     _persist(book, profile, result, key, started, round(time.time() - started, 2))
+    _emit(on_event, "finished", result=result.to_dict())
     return result
 
 
@@ -156,6 +173,7 @@ def _attempt(
     headless: bool,
     tos_forbids_automation: bool,
     poll_timeout: int,
+    on_event: Optional[EventFn] = None,
 ) -> RunResult:
     """Do the work.  Never persists -- ``run_registration`` owns that."""
     from playwright.sync_api import sync_playwright
@@ -169,12 +187,14 @@ def _attempt(
         result.stage = "blocked-by-verdict"
         result.errors.append(verdict.summary())
         result.notes = verdict.human_step
+        _emit(on_event, "stage", stage=result.stage, message=verdict.summary())
         return result
 
     # quota + dedupe
     if not force and book.already_done(key):
         result.stage = "skipped-duplicate"
         result.errors.append(f"dedupe: {key} already completed")
+        _emit(on_event, "stage", stage=result.stage, message=f"dedupe: {key}")
         return result
     if profile.max_successful_invites is not None:
         used = len([r for r in book.find(key) if r.get("outcome") == "success"])
@@ -184,6 +204,8 @@ def _attempt(
                 f"quota: {used}/{profile.max_successful_invites} invite slots used; "
                 f"pass --allow-multi to continue"
             )
+            _emit(on_event, "stage", stage=result.stage,
+                  message=f"quota {used}/{profile.max_successful_invites}")
             return result
 
     # mailbox
@@ -199,6 +221,7 @@ def _attempt(
         except Exception as exc:
             result.stage = "mailbox-failed"
             result.errors.append(f"{type(exc).__name__}: {exc}")
+            _emit(on_event, "stage", stage=result.stage, message=str(exc))
             return result
         # Capture the "already there" set *before* the site is asked to send
         # anything.  Without this, a leftover message from an earlier run can
@@ -206,6 +229,7 @@ def _attempt(
         mail_baseline = mailbox.current_ids()
     result.mail_dump = str(dump_path)
     result.password = password or make_password()
+    _emit(on_event, "identity", email=result.email, has_password=bool(result.password))
 
     snapshot_dir = out / "snapshots"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -224,6 +248,7 @@ def _attempt(
 
             # --- open the invite landing page ---
             result.stage = "landing"
+            _emit(on_event, "stage", stage=result.stage, message="opening the invite page")
             page.goto(profile.invite_url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(2500)
 
@@ -234,10 +259,12 @@ def _attempt(
             if challenge:
                 result.stage = "blocked-by-captcha"
                 result.errors.append(f"a {challenge} challenge is mounted in the live page; stopping")
+                _emit(on_event, "stage", stage=result.stage, message=f"{challenge} challenge")
                 return result
 
             # --- email step ---
             result.stage = "email"
+            _emit(on_event, "stage", stage=result.stage, message=f"typing {result.email}")
             email_selector = profile.selectors.get("email")
             if not email_selector:
                 result.errors.append("no email selector in the profile")
@@ -251,6 +278,7 @@ def _attempt(
 
             # --- password step ---
             result.stage = "password"
+            _emit(on_event, "stage", stage=result.stage, message="setting the password")
             password_selector = profile.selectors.get("password")
             if password_selector:
                 human_type(page, password_selector, result.password)
@@ -274,6 +302,8 @@ def _attempt(
             mode = profile.verification.mode
             if mode == "link":
                 result.stage = "await-verification-link"
+                _emit(on_event, "stage", stage=result.stage,
+                      message=f"waiting for mail (up to {poll_timeout}s)")
                 if mailbox is None:
                     result.errors.append("verification needs a mailbox but none was available")
                     return result
@@ -289,6 +319,7 @@ def _attempt(
                     result.errors.append("no verification link arrived: " + "; ".join(poll.errors[-3:]))
                     return result
                 result.stage = "confirm-link"
+                _emit(on_event, "stage", stage=result.stage, message="opening the verification link")
                 try:
                     page.goto(poll.payload, wait_until="domcontentloaded", timeout=40000)
                 except Exception as exc:
@@ -301,6 +332,8 @@ def _attempt(
 
             elif mode == "code":
                 result.stage = "await-verification-code"
+                _emit(on_event, "stage", stage=result.stage,
+                      message=f"waiting for the code (up to {poll_timeout}s)")
                 if mailbox is None:
                     result.errors.append("verification needs a mailbox but none was available")
                     return result
@@ -324,6 +357,7 @@ def _attempt(
 
             # --- confirm ---
             result.stage = "confirm"
+            _emit(on_event, "stage", stage=result.stage, message="checking the session")
             session_user = _in_page_session(page, profile)
             if not session_user:
                 shot = snapshot_dir / f"{profile.site}_{int(started)}.png"
@@ -337,6 +371,7 @@ def _attempt(
 
             result.verified = bool(session_user.get("emailVerified", True))
             result.stage = "state"
+            _emit(on_event, "stage", stage=result.stage, message="reading account state")
             for label, path in (profile.endpoints_state or {}).items():
                 result.credits = _in_page_json(page, path)
                 break
@@ -345,6 +380,7 @@ def _attempt(
         except Exception as exc:
             result.stage = result.stage or "exception"
             result.errors.append(f"{type(exc).__name__}: {exc}")
+            _emit(on_event, "error", stage=result.stage, message=str(exc))
         finally:
             try:
                 browser.close()

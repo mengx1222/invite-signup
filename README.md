@@ -69,6 +69,7 @@ Python 3.10+。
 ## 3. 快速开始（三条命令）
 
 > 完整用法（含每种失败怎么处理、换新站点要做什么）见 [`docs/USAGE.md`](docs/USAGE.md)。
+> 不想敲命令的话，`python -m invitesignup web` 会起一个本机界面（`http://127.0.0.1:8765`）。
 
 ### 3.1 探站 —— 搞清楚这个站怎么注册
 
@@ -164,6 +165,7 @@ invite-signup/
 │   ├── ledger.py      append-only 台账 + 去重键 + 脱敏
 │   ├── failures.py    失败分类：能不能重试由阶段决定
 │   ├── human.py       拟人输入/点击（不碰任何挑战）
+│   ├── web.py         本机 Web 界面（Flask + SSE，只绑 127.0.0.1）
 │   └── cli.py         命令行入口
 ├── adapters/          各站点的已验证事实（第一个样本：yila.py）
 ├── profiles/          profile JSON（示例：yila.example.json）

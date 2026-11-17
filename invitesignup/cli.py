@@ -147,6 +147,21 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Start the local web UI."""
+    try:
+        from .web import serve
+    except ImportError as exc:
+        print(f"[-] the web UI needs Flask: {exc}")
+        print("    pip install flask")
+        return 1
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"[!] binding {args.host} exposes this tool on the network.")
+        print("    it holds account credentials; prefer 127.0.0.1")
+    serve(host=args.host, port=args.port, output_dir=args.output_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="invite-signup", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -188,6 +203,13 @@ def build_parser() -> argparse.ArgumentParser:
     l = sub.add_parser("ledger", help="show the run ledger")
     l.add_argument("--file", default="./output/ledger.jsonl")
     l.set_defaults(func=cmd_ledger)
+
+    w = sub.add_parser("web", help="start the local web UI")
+    w.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default: local only)")
+    w.add_argument("--port", type=int, default=8765)
+    w.add_argument("--output-dir", default="./output")
+    w.set_defaults(func=cmd_web)
 
     return parser
 

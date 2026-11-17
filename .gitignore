@@ -8,6 +8,9 @@ venv/
 output/
 *.local.json
 config.json
+# profiles produced by a live probe carry the real invite code and inviter
+# name, so only *.example.json belongs in the repo
+profiles/*.web.json
 
 # editors
 .idea/

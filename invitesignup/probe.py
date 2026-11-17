@@ -23,13 +23,24 @@ import re
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import requests
 
 from .human import launch_browser
 from .profile import Attribution, SiteProfile, Verification
 from .verdict import Verdict, decide
+
+EventFn = Callable[[str, Dict[str, Any]], None]
+
+
+def _emit(on_event: Optional[EventFn], kind: str, **payload: Any) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(kind, payload)
+    except Exception:
+        pass
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
@@ -253,6 +264,50 @@ def role_endpoints(api_paths: Sequence[str], fragments: Sequence[str] = ()) -> D
                 out.setdefault(role, path)
                 break
     return out
+
+
+# Paths that report live account state rather than performing an action.
+# Finding these automatically matters: without them a successful run reports
+# no balance, and "the account exists" is all you can say about it.
+STATE_ENDPOINT_HINTS = {
+    "credits": ("/api/credits", "/api/balance", "/api/quota", "/api/usage"),
+    "referral": ("/api/referral/me", "/api/referral", "/api/invite/me"),
+}
+
+
+def find_state_endpoints(api_paths: Sequence[str]) -> Dict[str, str]:
+    """Pick out the endpoints that return account state.
+
+    These are matched exactly (or as a prefix) rather than by substring,
+    because `/api/referral/check-email` also contains "referral" but is an
+    action, not a state read.
+    """
+    out: Dict[str, str] = {}
+    for label, candidates in STATE_ENDPOINT_HINTS.items():
+        for candidate in candidates:
+            for path in api_paths:
+                if path == candidate or path.rstrip("/") == candidate.rstrip("/"):
+                    out[label] = path
+                    break
+            if label in out:
+                break
+    return out
+
+
+def find_sign_in_endpoint(api_paths: Sequence[str], fragments: Sequence[str]) -> str:
+    """Locate the sign-in route, which is built the same way as sign-up."""
+    for path in api_paths:
+        if "sign-in" in path.lower() or "signin" in path.lower() or "login" in path.lower():
+            return path
+    base = ""
+    for path in api_paths:
+        if path.count("/") == 2 and path.startswith("/api/"):
+            base = path
+            break
+    for fragment in fragments:
+        if "sign-in" in fragment.lower() or "login" in fragment.lower():
+            return (base + fragment) if base else fragment
+    return ""
 
 
 # --------------------------------------------------------------------------
@@ -596,6 +651,7 @@ def probe(
     advance: bool = True,
     tos_forbids_automation: bool = False,
     timeout: int = 25,
+    on_event: Optional[EventFn] = None,
 ) -> ProbeResult:
     """Run the full discovery pass and return a profile plus a verdict."""
     warnings: List[str] = []
@@ -605,6 +661,7 @@ def probe(
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     site = parsed.netloc.replace("www.", "")
 
+    _emit(on_event, "stage", stage="landing", message=f"fetching {invite_url}")
     try:
         r = requests.get(invite_url, timeout=timeout, headers={"User-Agent": USER_AGENT},
                          allow_redirects=True)
@@ -618,18 +675,24 @@ def probe(
 
     payload = extract_invite_payload(html)
     findings["invite_payload"] = payload
+    if payload:
+        _emit(on_event, "invite", payload=payload)
 
     chunks = extract_chunks(html, base_url)
+    _emit(on_event, "stage", stage="chunks", message=f"scanning {len(chunks)} bundles")
     scan = scan_chunks(chunks)
     findings["scan"] = scan
 
+    _emit(on_event, "stage", stage="config", message="probing public config")
     cfg = probe_config(base_url)
     findings["config"] = cfg
 
+    _emit(on_event, "stage", stage="dom", message="reading the form")
     dom1 = dom_probe(invite_url, headless=headless, locale=locale)
     findings["dom_initial"] = {"url": dom1.url, "inputs": len(dom1.inputs), "buttons": len(dom1.buttons)}
     dom2: Optional[DomInfo] = None
     if advance:
+        _emit(on_event, "stage", stage="advance", message="stepping past the first field")
         dom2 = advance_probe(invite_url, headless=headless, locale=locale)
         if dom2.inputs:
             findings["advanced"] = True
@@ -660,6 +723,16 @@ def probe(
             captcha = deeper
 
     endpoints = role_endpoints(scan.get("api_paths") or [], scan.get("endpoint_fragments") or [])
+    state_endpoints = find_state_endpoints(scan.get("api_paths") or [])
+    sign_in = find_sign_in_endpoint(
+        scan.get("api_paths") or [], scan.get("endpoint_fragments") or []
+    )
+    if not state_endpoints:
+        warnings.append(
+            "no account-state endpoint was found. Endpoints like /api/credits usually "
+            "only load after sign-in, so the prober cannot see them. Add them to "
+            "endpoints_state by hand if you want the balance reported."
+        )
 
     verification = infer_verification(scan, dom1, endpoints)
     if dom2 is not None and _has_code_field(dom2):
@@ -699,6 +772,8 @@ def probe(
         steps=steps,
         selectors=selectors,
         endpoints=endpoints,
+        endpoints_state=state_endpoints,
+        sign_in_endpoint=sign_in or "/api/auth/sign-in/email",
         locale=locale,
         probed_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
     )
@@ -710,4 +785,5 @@ def probe(
         warnings.append(f"a {captcha} fingerprint was found; the verdict will stop the run")
 
     verdict = decide(profile, tos_forbids_automation=tos_forbids_automation)
+    _emit(on_event, "verdict", verdict=verdict.to_dict())
     return ProbeResult(profile=profile, findings=findings, warnings=warnings, verdict=verdict)

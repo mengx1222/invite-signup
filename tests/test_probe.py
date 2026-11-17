@@ -17,6 +17,8 @@ from invitesignup.probe import (  # noqa: E402
     classify_captcha,
     extract_chunks,
     extract_invite_payload,
+    find_sign_in_endpoint,
+    find_state_endpoints,
     infer_attribution,
     infer_selectors,
     infer_steps,
@@ -184,6 +186,33 @@ def test_generated_ids_are_not_preferred():
     )
     selectors = infer_selectors(dom)
     assert selectors["email"] == 'input[type="email"]'
+
+
+def test_find_state_endpoints_ignores_action_paths():
+    paths = [
+        "/api/referral/check-email",   # an action, not a state read
+        "/api/credits",
+        "/api/referral/me",
+    ]
+    found = find_state_endpoints(paths)
+    assert found["credits"] == "/api/credits"
+    assert found["referral"] == "/api/referral/me"
+
+
+def test_find_state_endpoints_returns_empty_when_absent():
+    assert find_state_endpoints(["/api/auth/get-session"]) == {}
+
+
+def test_find_sign_in_endpoint_from_a_full_path():
+    assert find_sign_in_endpoint(["/api/auth/sign-in/email"], []) == "/api/auth/sign-in/email"
+
+
+def test_find_sign_in_endpoint_composed_from_a_fragment():
+    assert find_sign_in_endpoint(["/api/auth"], ["/sign-in/email"]) == "/api/auth/sign-in/email"
+
+
+def test_find_sign_in_endpoint_returns_empty_when_absent():
+    assert find_sign_in_endpoint(["/api/credits"], []) == ""
 
 
 if __name__ == "__main__":
