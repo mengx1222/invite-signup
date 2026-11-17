@@ -44,8 +44,13 @@ def test_run_refuses_without_yes_when_confirmation_is_required():
         code = main(["run", "--profile", str(profile), "--output-dir", tmp])
         assert code == 3, f"expected the gate to return 3, got {code}"
 
+        # The decline itself is recorded.  Without this row, "we never tried"
+        # and "we tried and the gate stopped it" look identical in the ledger.
         ledger = Path(tmp) / "ledger.jsonl"
-        assert not ledger.exists() or ledger.read_text(encoding="utf-8").strip() == ""
+        rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "declined"
+        assert rows[0]["stage"] == "gate-no-yes"
 
 
 def test_run_proceeds_past_the_gate_with_yes():

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import ledger as ledger_mod
@@ -23,6 +24,38 @@ from .probe import probe
 from .runner import run_registration
 from .verdict import decide
 from .verify import verify_account
+
+
+def _record_declined(output_dir: str, profile: SiteProfile, verdict) -> None:
+    """Record a run the CLI refused to start.
+
+    The gate in cmd_run() returns before run_registration() is ever called,
+    so without this the ledger would not show that an attempt was made and
+    declined.  That matters: the ledger is the only place the quota and
+    dedupe counts come from, and a silent gap makes "we never tried" and "we
+    tried and stopped" indistinguishable.
+    """
+    try:
+        book = ledger_mod.Ledger.open(Path(output_dir) / "ledger.jsonl")
+        book.append({
+            "site": profile.site,
+            "invite_code": profile.invite_code,
+            "dedupe_key": ledger_mod.dedupe_key(profile.site, profile.invite_code),
+            "verdict": verdict.state,
+            "outcome": "declined",
+            "stage": "gate-no-yes",
+            "email": "",
+            "verified": False,
+            "reward_credits": profile.reward_credits,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "duration_s": 0,
+            "last_error": "; ".join(verdict.reasons[:3]),
+            "notes": verdict.human_step,
+        })
+    except Exception:
+        # Recording the decline must never break the CLI's exit path.
+        pass
 
 
 def cmd_probe(args: argparse.Namespace) -> int:
@@ -64,6 +97,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"         - {reason}")
         if verdict.human_step:
             print(f"[human ] {verdict.human_step}")
+        _record_declined(args.output_dir, profile, verdict)
         return 3
     if args.tos_blocks:
         verdict = decide(profile, tos_forbids_automation=True)
