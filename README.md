@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-50%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-66%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -39,7 +39,17 @@
 
 1. **协议笔记要写"坑"，不只写流程** —— 见 [`docs/LESSONS.md`](docs/LESSONS.md) 与 [`docs/PROTOCOL-YILA.md`](docs/PROTOCOL-YILA.md)。
 2. **失败语义要分级**：传输层失败可以重试，**业务拒绝必须整批停**，不换号、不补号。
-3. **离线冒烟测试**：核心逻辑必须能在不联网、不开浏览器的情况下被验证（44 个测试）。
+3. **离线冒烟测试**：核心逻辑必须能在不联网、不开浏览器的情况下被验证（66 个测试）。
+
+### 2026-11-17 第二轮调研：又看了一批同类项目
+
+| 项目 | 星数 | 值得学的 | 落到本项目哪里 |
+| :--- | :--- | :--- | :--- |
+| [lxf746/any-auto-register](https://github.com/lxf746/any-auto-register) | 3.4k | **`before_ids` 邮件基线**（请求前先抓一次消息 ID，之后只认新的）；**provider 注册表**（`@register_provider` 装饰器 + `from_config` 工厂 + 启动扫描）；**失败分级异常类** | `mailbox.current_ids()` + `poll(before_ids=...)`；`failures.py` 的 `Kind` / `Action` |
+| [techinz/playwright-captcha](https://github.com/techinz/playwright-captcha) | 365 | 验证码做成**可插拔 provider**，click 模式与 2captcha API 两种驱动 | **未采纳**：本项目遇到验证码直接停，不引入打码服务 |
+
+**没有采纳的**：`any-auto-register` 的 DDD 四层（`domain/` `application/` `infrastructure/` `api/`）和 Electron 桌面端。
+本项目是 CLI 工具 + 库，硬套分层只会增加跳转成本；等真有 WebUI 需求再考虑。
 
 ---
 
@@ -150,13 +160,14 @@ invite-signup/
 │   ├── verify.py      独立验收器：另起进程重新登录 + 查状态
 │   ├── mailbox.py     收信层：类型摊平、链接/码抽取、失败留痕
 │   ├── ledger.py      append-only 台账 + 去重键 + 脱敏
+│   ├── failures.py    失败分类：能不能重试由阶段决定
 │   ├── human.py       拟人输入/点击（不碰任何挑战）
 │   └── cli.py         命令行入口
 ├── adapters/          各站点的已验证事实（第一个样本：yila.py）
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记
 ├── examples/          可直接运行的示例
-└── tests/             50 个离线测试
+└── tests/             66 个离线测试
 ```
 
 ---
@@ -174,7 +185,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 50 passed
+python -m pytest tests/ -q          # 66 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 

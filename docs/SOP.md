@@ -184,6 +184,18 @@ python -m invitesignup run --profile profiles/example.json
 > 「发信之前失败可以重试，发信之后失败必须停」是硬边界：
 > 发信意味着服务端已经记下了这次尝试，盲目重试就是在烧号。
 
+**这条规则由代码执行，不是靠自觉。** `invitesignup/failures.py` 把错误先分类
+（transport / rate_limit / site_rejected / captcha / mail_timeout / config /
+verification / unknown），再用 `mail_requested` 这个阶段标志决定动作：
+
+```
+classify("Connection reset by peer", mail_requested=False)  -> transport / retry
+classify("Connection reset by peer", mail_requested=True)   -> transport / abort
+classify("something nobody has seen before")                -> unknown   / stop
+```
+
+**未分类的错误默认不重试。** 宁可停一次让人看一眼，也不要自动重试出一个重复账号。
+
 ### 4.2 每一步都要留痕
 
 - 失败时截屏 → `output/snapshots/`
@@ -197,6 +209,20 @@ python -m invitesignup run --profile profiles/example.json
 
 **不要把「把邀请码用满」当成默认行为。** 邀请计划给你几个名额，是让你分享给
 真实的人，不是让你自己刷。
+
+### 4.4 收信必须防串码
+
+验证邮件的匹配有**两道闸**，缺一不可：
+
+| 闸 | 做法 | 为什么 |
+| :--- | :--- | :--- |
+| **消息 ID 基线** | 发出注册请求**之前**先 `current_ids()` 抓一次，之后只接受不在这个集合里的邮件 | 时钟会漂，ID 不会。上一轮遗留的验证邮件会被当成这一次的 |
+| **时间戳** | `not_before` 设为请求发出的时刻 | 兜底；但**必须能正确解析**，否则静默失效 |
+
+> 时间戳解析是易错点：mail.tm 的 `createdAt` 是 ISO-8601 字符串
+> （`"2026-11-17T10:20:06.372Z"`），不是毫秒数。解析失败会返回 `0.0`，
+> 而 `0.0` 是 falsy，`not_before` 那个条件直接短路——保护**静默失效**。
+> 用 `mailbox.parse_timestamp()`，它有离线测试覆盖。
 
 ---
 

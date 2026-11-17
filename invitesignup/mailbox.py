@@ -27,6 +27,7 @@ import re
 import string
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -56,6 +57,36 @@ def flatten(value: Any) -> str:
         parts = [flatten(item) for item in value.values()]
         return "\n".join(p for p in parts if p)
     return str(value)
+
+
+def parse_timestamp(value: Any) -> float:
+    """Normalise whatever a provider calls a timestamp into unix seconds.
+
+    Providers disagree: mail.tm sends an ISO-8601 string
+    ("2026-11-17T10:20:06.372Z"), others send milliseconds or seconds as a
+    number or a numeric string.  Getting this wrong is silent and expensive:
+    an unparsed timestamp becomes 0.0, so a "only accept mail newer than the
+    request" filter stops filtering and a stale code from an earlier run gets
+    mistaken for a fresh one.
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000.0 if number > 1e11 else number
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        return parse_timestamp(float(text))
+    normalised = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalised)
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 LINK_RE = re.compile(r"https?://[^\s\"'<>\\,)]+")
@@ -183,8 +214,7 @@ class MailTmProvider(Provider):
             out.append(Message(
                 id=m.get("id"),
                 subject=m.get("subject", "") or "",
-                received_at=float(m.get("createdAt") or 0) / 1000.0
-                if str(m.get("createdAt") or "").isdigit() else 0.0,
+                received_at=parse_timestamp(m.get("createdAt")),
             ))
         return out
 
@@ -358,6 +388,7 @@ class PollResult:
     message: Optional[Message] = None
     errors: List[str] = field(default_factory=list)
     dump_path: str = ""
+    baseline: int = 0
 
 
 class Mailbox:
@@ -417,6 +448,22 @@ class Mailbox:
 
     # ---------------- polling ----------------
 
+    def current_ids(self) -> set:
+        """Return the set of message ids that already exist.
+
+        This is the baseline half of the staleness guard: capture it *before*
+        triggering the mail, and only accept messages outside it.  A timestamp
+        alone is not enough -- provider clocks drift, and a message sent in the
+        same second as the request is ambiguous.
+        """
+        if self.provider is None:
+            return set()
+        try:
+            return {m.id for m in self.provider.messages()}
+        except Exception as exc:
+            self.errors.append(f"baseline failed: {type(exc).__name__}: {exc}")
+            return set()
+
     def poll(
         self,
         mode: str = "link",
@@ -424,6 +471,7 @@ class Mailbox:
         link_hints: Sequence[str] = ("verify", "token", "callback", "confirm"),
         timeout_secs: int = 120,
         not_before: Optional[float] = None,
+        before_ids: Optional[set] = None,
         subject_hint: str = "",
     ) -> PollResult:
         """Poll until a verification payload shows up.
@@ -431,6 +479,11 @@ class Mailbox:
         ``mode`` is ``link`` or ``code``.  ``not_before`` is a unix timestamp;
         messages older than it are ignored so a stale code can never be
         mistaken for a fresh one.
+
+        ``before_ids`` is a stronger guard: any message id present in it is
+        skipped outright.  Pass the result of :meth:`current_ids` captured
+        before the signup request.  Both guards are applied when both are
+        given -- a message must be *new by id* and *newer by time*.
         """
         result = PollResult()
         if self.provider is None:
@@ -439,14 +492,19 @@ class Mailbox:
 
         deadline = time.time() + timeout_secs
         interval = 3.0
-        seen: set = set()
+        seen: set = set(before_ids or ())
+        result.baseline = len(seen)
 
         while time.time() < deadline:
             try:
                 messages = self.provider.messages()
             except Exception as exc:
                 result.errors.append(f"{type(exc).__name__}: {exc}")
-                time.sleep(interval)
+                # Rate limits are common on the free providers; back off
+                # further than a plain retry rather than hammering the API.
+                backoff = interval * 2 if "429" in str(exc) else interval
+                time.sleep(backoff)
+                interval = min(interval * 1.3, 15.0)
                 continue
 
             for message in messages:

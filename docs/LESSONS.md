@@ -255,3 +255,57 @@ GENERATED_ID_RE = re.compile(r"(_R_|_r_|^[a-z]{1,3}[0-9a-f]{6,}$|[0-9]{4,}$)")
 
 另外，归因 cookie 往往是**前端 JS 写的**（`document.cookie = ...`），
 不是服务端 `Set-Cookie` 头。两处都要查，先查 `Set-Cookie`（更权威）。
+
+---
+
+## 15. 时间戳解析失败是**静默**的，而且会废掉防串码
+
+**症状**：没有立刻可见的症状。这是最危险的一类。
+
+**根因**：`Message.received_at` 原本这么算：
+
+```python
+received_at=float(m.get("createdAt") or 0) / 1000.0
+            if str(m.get("createdAt") or "").isdigit() else 0.0
+```
+
+而 mail.tm 的 `createdAt` 是 **ISO-8601 字符串** `"2026-11-17T10:20:06.372Z"`，
+`isdigit()` 为 `False`，于是**恒返回 `0.0`**。
+
+**后果**：`poll(not_before=...)` 里那句
+`if not_before and message.received_at and message.received_at < not_before`
+——`received_at` 是 `0.0`（falsy），整个条件直接短路，
+**"只接受本次请求之后到达的邮件"这条保护完全失效**。上一轮遗留的旧验证邮件
+会被当成这一次的验证结果，表现为"用错的链接把号验了"或"验了个已存在的账号"。
+
+**处置**：
+
+- 加 `parse_timestamp()` 统一处理 ISO-8601 / 毫秒 / 秒 / 数字字符串 / 垃圾输入，
+  并配 6 条离线测试（含 ISO 带 Z、不带 Z、毫秒、秒、数字串、垃圾）；
+- **不要只靠时间戳**。加 `before_ids` 基线：请求发出**之前**先抓一次
+  `current_ids()`，之后只接受不在这个集合里的邮件。时间戳会因时钟漂移失准，
+  消息 ID 不会。
+
+> 这条是从 `lxf746/any-auto-register` 的 `before_ids` 做法学来的，比只看时间戳稳。
+
+---
+
+## 16. 「能不能重试」必须由**阶段**决定，不能只看错误类型
+
+**症状**：一个连接超时，重试之后可能建出两个号，或者白白烧掉一个邀请名额。
+
+**根因**：把失败一律当"技术问题，重试一下"。
+
+**规则**：
+
+| 阶段 | 传输层失败 | 429 | 站点拒绝 | 验证码 | 收不到信 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **发信请求之前** | 可重试 | 可重试 | 整批停 | 停 | — |
+| **发信请求之后** | **整批停** | 停 | 整批停 | 停 | 停 |
+
+发信意味着**服务端已经记下了这次尝试**，盲目重试就是在重复建号。
+
+**处置**：`invitesignup/failures.py` 把错误分成 `Kind`（transport / rate_limit /
+site_rejected / captcha / mail_timeout / config / verification / unknown），
+再按 `mail_requested` 这个阶段标志决定 `Action`（retry / stop / abort）。
+未分类的错误**默认不重试**。

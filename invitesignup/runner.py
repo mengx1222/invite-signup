@@ -117,6 +117,7 @@ def run_registration(
 
     # mailbox
     mailbox: Optional[Mailbox] = None
+    mail_baseline: set = set()
     dump_path = out / f"mail_dump_{profile.site}.txt"
     if email:
         result.email = email
@@ -128,6 +129,10 @@ def run_registration(
             result.stage = "mailbox-failed"
             result.errors.append(f"{type(exc).__name__}: {exc}")
             return result
+        # Capture the "already there" set *before* the site is asked to send
+        # anything.  Without this, a leftover message from an earlier run can
+        # be read as the verification for this one.
+        mail_baseline = mailbox.current_ids()
     result.mail_dump = str(dump_path)
     result.password = password or make_password()
 
@@ -213,6 +218,7 @@ def run_registration(
                     link_hints=_link_hints(profile),
                     timeout_secs=poll_timeout,
                     not_before=started,
+                    before_ids=mail_baseline,
                 )
                 if not poll.found:
                     result.errors.append("no verification link arrived: " + "; ".join(poll.errors[-3:]))
@@ -238,6 +244,7 @@ def run_registration(
                     pattern=profile.verification.pattern or r"\b\d{4,8}\b",
                     timeout_secs=poll_timeout,
                     not_before=started,
+                    before_ids=mail_baseline,
                 )
                 if not poll.found:
                     result.errors.append("no verification code arrived: " + "; ".join(poll.errors[-3:]))
