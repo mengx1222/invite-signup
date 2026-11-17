@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
+from .human import launch_browser
 from .profile import Attribution, SiteProfile, Verification
 from .verdict import Verdict, decide
 
@@ -347,12 +348,7 @@ def dom_probe(url: str, headless: bool = True, locale: str = "en-US") -> DomInfo
     from playwright.sync_api import sync_playwright  # lazy: keeps the package importable without Playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome",
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
-            ignore_default_args=["--enable-automation"],
-        )
+        browser = launch_browser(p, headless=headless)
         try:
             context = browser.new_context(no_viewport=True, locale=locale)
             page = context.new_page()
@@ -375,12 +371,7 @@ def advance_probe(url: str, headless: bool = True, locale: str = "en-US",
 
     email = probe_email or PROBE_EMAIL_TEMPLATE.format(rand=str(int(time.time()))[-6:])
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome",
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
-            ignore_default_args=["--enable-automation"],
-        )
+        browser = launch_browser(p, headless=headless)
         try:
             context = browser.new_context(no_viewport=True, locale=locale)
             page = context.new_page()

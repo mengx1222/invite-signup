@@ -77,21 +77,39 @@ def click_first_enabled_non_google(page: Page) -> bool:
     return False
 
 
-# Minimal automation-flag normalisation.  This only stops honest automation
-# from being rejected as automation; it does not touch, fake or defeat any
-# challenge, and it is deliberately not extended in that direction.
-ENVIRONMENT_CONSISTENCY_JS = """
-(() => {
-  try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
-  } catch (e) {}
-})();
-"""
+# Launch flags that keep honest automation from being rejected *as* automation.
+#
+# Measured on this machine: with `--disable-blink-features=AutomationControlled`
+# and `--enable-automation` removed, `navigator.webdriver` is already the native
+# `false` getter (`function get webdriver() { [native code] }`).  An earlier
+# version also injected `Object.defineProperty(navigator, 'webdriver', ...)` as
+# an init script.  That was measured to have *no effect* -- the prototype's
+# native accessor wins -- so it was dead code that looked like a safeguard.
+# It has been removed rather than left in place to mislead the next reader.
+LAUNCH_ARGS = ("--disable-blink-features=AutomationControlled", "--no-first-run")
+IGNORE_DEFAULT_ARGS = ("--enable-automation",)
+
+
+def launch_browser(playwright, *, headless: bool = True):
+    """Launch the browser with one canonical set of flags.
+
+    Three call sites used to carry their own copy of these flags.  Changing a
+    flag in one place and missing the other two is the kind of drift that only
+    shows up as an unexplained behavioural difference between probe and run.
+    """
+    return playwright.chromium.launch(
+        channel="chrome",
+        headless=headless,
+        args=list(LAUNCH_ARGS),
+        ignore_default_args=list(IGNORE_DEFAULT_ARGS),
+    )
 
 
 def apply_environment_consistency(context) -> None:
-    """Inject the minimal flag normalisation into a browser context."""
-    try:
-        context.add_init_script(ENVIRONMENT_CONSISTENCY_JS)
-    except Exception:
-        pass
+    """Kept as a no-op hook for callers.
+
+    There is nothing to inject: the launch flags already produce a native
+    `webdriver === false`, and injecting a fake getter on top was measured to
+    change nothing while adding a detectable non-native property.
+    """
+    return None

@@ -384,3 +384,64 @@ run_registration()   ← 只做一件事：调 _attempt()，然后无条件 _per
 （包括我自己）再"修"一遍。
 
 > 教训：**先测，再改**。这次的假设听起来很合理，但就是错的。
+
+---
+
+## 20. 一段"防护"代码如果**没生效**，比没有更糟
+
+**症状**：没有症状。这正是问题——它看上去在防检测，实际上什么都没做。
+
+**根因**：`apply_environment_consistency()` 往每个 context 注入
+
+```js
+Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true })
+```
+
+但实测发现：加上 `--disable-blink-features=AutomationControlled` 并去掉
+`--enable-automation` 之后，`navigator.webdriver` **已经是原生 `false`**
+（`function get webdriver() { [native code] }`）。原型链上的原生 accessor
+优先级高于在实例上 `defineProperty`，所以这段注入**完全无效**。
+
+**更糟的地方**：如果它真的生效了，反而会制造一个**非原生 getter**，
+那本身就是可检测特征。
+
+**处置**：删掉注入，只保留启动参数；`apply_environment_consistency()`
+保留为空操作并写明原因，避免有人以为它是有效防护。
+
+**判据**：验证"原生"与否，看
+`Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get.toString()`
+里有没有 `[native code]`。
+
+---
+
+## 21. 同一个启动参数写在三个地方，一定会漂
+
+**症状**：探站和执行的浏览器行为偶尔不一致，但代码"看起来一样"。
+
+**根因**：`probe.dom_probe()`、`probe.advance_probe()`、`runner` 各自
+复制了一份 `chromium.launch(args=[...], ignore_default_args=[...])`。
+三份拷贝里改一份、漏两份，是迟早的事。
+
+**处置**：收敛成 `human.launch_browser(playwright, headless=...)`，
+参数只定义一次（`LAUNCH_ARGS` / `IGNORE_DEFAULT_ARGS`）。三处调用点全部改用它。
+
+---
+
+## 22. 算了却没人读的字段，是**假的安全门**
+
+**症状**：`Verdict.requires_confirmation` 被赋值两处（`captcha == suspected`、
+`verification` 需要邮箱），但 `grep` 全仓发现**没有任何调用方读它**。
+
+**危害**：代码里看起来有一道"需要人工确认"的闸门，实际上 CLI 照样往下跑。
+这比没有闸门更危险——读代码的人会以为它是拦住的。
+
+**处置**：接进 CLI。
+
+```
+probe  -> 打印 [gate] 与理由（提示要用 --yes）
+run    -> 没有 --yes 就退出 3，并列出理由
+run    -> 有 --yes 才继续；但 captcha 仍然拦（--yes 不能越过 blocked）
+```
+
+**测试**：`tests/test_cli_gate.py` 三条——无 `--yes` 退出 3、
+有 `--yes` 过闸、`--yes` 越不过 captcha。

@@ -41,6 +41,14 @@ def cmd_probe(args: argparse.Namespace) -> int:
         print(f"[verdict] {result.verdict.summary()}")
         if result.verdict.human_step:
             print(f"[human ] {result.verdict.human_step}")
+        if result.verdict.requires_confirmation and not args.yes:
+            # The verdict allows the run but wants a human to have read the
+            # caveats.  Printing them is not enough -- the flag exists so the
+            # decision is explicit rather than implied by "the probe exited 0".
+            print("[gate  ] this profile needs a human ack before running:")
+            for reason in result.verdict.reasons:
+                print(f"         - {reason}")
+            print("         re-run `run` with --yes once you have read the above")
     for warning in result.warnings:
         print(f"[warn ] {warning}")
     return 0 if (result.verdict and result.verdict.allowed) else 2
@@ -48,6 +56,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     profile = SiteProfile.load(args.profile)
+    verdict = decide(profile, tos_forbids_automation=args.tos_blocks)
+    if verdict.requires_confirmation and not args.yes:
+        print(f"[verdict] {verdict.summary()}")
+        print("[gate  ] this profile needs an explicit ack; pass --yes to continue")
+        for reason in verdict.reasons:
+            print(f"         - {reason}")
+        if verdict.human_step:
+            print(f"[human ] {verdict.human_step}")
+        return 3
     if args.tos_blocks:
         verdict = decide(profile, tos_forbids_automation=True)
         if not verdict.allowed:
@@ -109,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not perform the existence check that reveals step-2 fields")
     p.add_argument("--tos-blocks", action="store_true",
                    help="declare that the site's terms forbid automation")
+    p.add_argument("--yes", action="store_true",
+                   help="acknowledge the verdict's caveats without being prompted")
     p.set_defaults(func=cmd_probe)
 
     r = sub.add_parser("run", help="create one account using an invite code")
@@ -122,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--headed", action="store_true")
     r.add_argument("--poll-timeout", type=int, default=120)
     r.add_argument("--tos-blocks", action="store_true")
+    r.add_argument("--yes", action="store_true",
+                   help="acknowledge the verdict's caveats and proceed")
     r.set_defaults(func=cmd_run)
 
     v = sub.add_parser("verify", help="prove an account exists (independent sign-in)")

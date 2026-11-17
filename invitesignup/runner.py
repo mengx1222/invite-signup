@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from . import ledger as ledger_mod
 from .failures import Action, classify
-from .human import apply_environment_consistency, click_first_enabled_non_google, human_click, human_type
+from .human import click_first_enabled_non_google, human_click, human_type, launch_browser
 from .mailbox import Mailbox
 from .profile import SiteProfile
 from .verdict import decide
@@ -211,15 +211,9 @@ def _attempt(
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chrome",
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
-            ignore_default_args=["--enable-automation"],
-        )
+        browser = launch_browser(p, headless=headless)
         try:
             context = browser.new_context(no_viewport=True, locale=profile.locale)
-            apply_environment_consistency(context)
             page = context.new_page()
 
             def on_response(resp):
