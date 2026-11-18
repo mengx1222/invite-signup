@@ -196,6 +196,48 @@ classify("something nobody has seen before")                -> unknown   / stop
 
 **未分类的错误默认不重试。** 宁可停一次让人看一眼，也不要自动重试出一个重复账号。
 
+### 4.1.1 邮箱被拒是**第四种**动作
+
+不是 retry，也不是 stop，而是 `NEEDS_HUMAN`：
+
+| 情形 | Kind | Action | 为什么 |
+| :--- | :--- | :--- | :--- |
+| 站点说这个邮箱是一次性的 | `mailbox_rejected` | `needs_human` | 同一个地址必然再被拒，重试无意义；换邮箱只有人能做 |
+| 业务拒绝（账号已存在等） | `site_rejected` | `abort` | 整批停，不换号 |
+| 收不到验证信 | `mail_timeout` | `stop` | 账号可能已建，不能再跑 |
+
+**为什么值得单独一类**：这三种失败的处置方式完全不同，混成一个
+"失败了"会让人用错补救手段——比如对 `mailbox_rejected` 反复重试，
+或者对 `mail_timeout` 换邮箱重跑（那会建出第二个号）。
+
+识别是**当场**做的：提交邮箱后立刻读页面的可见错误文案，命中
+`disposable` / `temporary email` / `domain not allowed` / `临时邮箱` 等
+就停，不等 120 秒超时。
+
+```
+[stage] mailbox-rejected
+the site refused this mailbox: Disposable email addresses are not allowed
+→ supply a real inbox with --email <address>
+```
+
+### 4.1.2 半自动模式：`--wait-link`
+
+当站点拒掉所有一次性邮箱、而验证邮件只能发到你能访问的收件箱时，
+不要退化成"手动注册一遍"。用：
+
+```powershell
+python -m invitesignup run --profile p.json --email you@outlook.com --wait-link --yes
+```
+
+```
+自动：打开邀请页 → 填邮箱 → 填密码 → 提交 → 触发发信
+人工：只做一件事——把邮件里的链接粘进来
+自动：打开链接 → 确认会话 → 读额度 → 落台账
+```
+
+**这条路径仍然受纪律约束**：它不绕过任何挑战，只是把"读你自己的收件箱"
+这一步交还给你。粘空行等于放弃，运行记为失败。
+
 ### 4.2 每一步都要留痕
 
 - 失败时截屏 → `output/snapshots/`
@@ -261,6 +303,7 @@ python -m invitesignup verify --profile profiles/example.json --email ... --pass
 
 | 现象 | 最可能的原因 | 处置 |
 | :--- | :--- | :--- |
+| 提示 `mailbox-rejected` | 站点明确拒绝了一次性邮箱域名 | 加 `--email` 用真实邮箱，或加 `--wait-link` 走半自动。**不要重试同一地址** |
 | 注册页提交后说"收不到验证信"，但邮件其实**到了** | 邮件正文是**数组**不是字符串，被 join 炸掉后异常被吞 | 用 `mailbox.flatten()`；检查 `mail_dump` 里 `body (N chars)` 的 N |
 | 找不到"继续"按钮 | 按**文案**匹配 + 正则用了 `\b`（对 CJK 不成立） | 改用 id/name/type；探站时固定 locale |
 | 第一次探测只有邮箱框，第二次才有密码框 | 两步表单 | 用 `advance_probe()` 推进一次（存在性检查，不建号） |

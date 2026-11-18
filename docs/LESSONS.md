@@ -501,3 +501,85 @@ CLI 的 `probe` 会把 `[conf]` 和 `[review]` 两段打出来。
 
 **纪律**：`inferred` 不是"待补全"，是"这里需要人看一眼"。
 把推断标成实测，比不标更糟。
+
+---
+
+## 25. 「id 优先」在**多个同类输入框**的页面上会选错
+
+**症状**：`automationexercise.com/signup` 的 email 选择器选成了
+`#susbscribe_email`——那是页脚的**订阅框**，不是注册表单。
+
+**根因**：页面有三个 email 输入框（登录、注册、页脚订阅）。属性阶梯
+「id > name > testid > type」只看属性好不好，不看**这个输入框属于哪个表单**。
+页脚那个恰好有 id（而且是站点自己拼错的 `susbscribe`），于是赢了。
+
+**危害**：不是"选择器不够稳"，是**整条流程填错地方**——会往订阅框里
+输邮箱然后点注册按钮，然后一路失败。
+
+**处置**：加 `looks_incidental()`，在走属性阶梯**之前**排除
+`subscribe / newsletter / search / coupon / promo / chat` 这类明显
+不属于注册表单的输入。**上下文优先于属性。**
+
+若排除后一个都不剩，宁可**不输出** email 选择器（让 verdict 报
+`missing_selectors`），也不要自信地选一个错的。
+
+> 这是「宁可停下，不要猜错」原则在选择器上的具体应用。
+
+---
+
+## 26. 广告栈的 reCAPTCHA iframe 不是验证码
+
+**症状**：一个完全没有验证码的 Django 站点被判成 `recaptcha`，
+verdict 直接 `blocked-by-captcha`。
+
+**根因**：页面挂了 AdSense，Google 广告栈会加载
+`https://www.google.com/recaptcha/api2/aframe`——这是**广告质量检测帧**，
+用户根本看不到。
+
+我的 `classify_captcha` 只检查 iframe src 里有没有 `recaptcha`，
+于是广告帧被当成了挑战。
+
+**处置**：`CAPTCHA_FALSE_FRIENDS` 名单排除：
+
+```
+google.com/recaptcha/api2/aframe
+adtrafficquality.google
+doubleclick.net
+googlesyndication.com
+google-analytics.com
+googletagmanager.com
+```
+
+真正的 `recaptcha/api2/anchor`、`hcaptcha.com`、`challenges.cloudflare.com`
+仍然算数。
+
+**顺带**：`captcha_nodes` 的 DOM 计数也收紧了——只算**有实际尺寸**的元素
+（宽高 > 20px），因为广告和客服组件会留下零尺寸的 captcha 命名容器。
+
+> 教训同第 20 条：**误报和漏报都是 bug**。判成有验证码会让一个能跑的站
+> 被自己的护栏拦住，这比漏报更让人困惑——因为代码"看起来在保护你"。
+
+---
+
+## 27. URL 最后一段不一定是邀请码
+
+**症状**：探 `/signup` 时，verdict 说「invite code did not validate」。
+
+**根因**：没有 invite payload 时的兜底逻辑是"取 URL 最后一段，长度 ≥ 6
+且是字母数字就当邀请码"。`signup` 恰好 6 个字母。
+
+**危害**：对一个**根本不是邀请制**的站点，给出「邀请码无效」这种
+自信的错误结论。人会去找一个从未存在过的失效链接。
+
+**处置**：两道修正。
+
+1. **只在 URL 看起来像邀请链接时才猜**——路径里要有
+   `/invite/` `/invitation/` `/ref/` `/referral/`。
+2. **verdict 区分两种"没码"**：
+
+| 情况 | blocker | 含义与处置 |
+| :--- | :--- | :--- |
+| 页面上找不到邀请码 | `invite_absent` | 可能不是邀请制站点。确认 URL |
+| 邀请码存在但被拒 | `invite_invalid` | 链接失效或拼错。换链接 |
+
+混成一句「did not validate」会让人用错补救手段。

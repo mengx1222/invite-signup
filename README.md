@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-114%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-121%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -171,7 +171,7 @@ invite-signup/
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记
 ├── examples/          可直接运行的示例
-└── tests/             114 个离线测试
+└── tests/             121 个离线测试
 ```
 
 ---
@@ -181,6 +181,11 @@ invite-signup/
 | 站点 | 邀请入口 | 验证码 | 验证方式 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
 | `yila.ai` | `/en/invite/<code>`（服务端下发 `yila_invite_code` cookie） | **无** | 邮件链接 | ✅ 全链路实跑通过（2026-11-17，27.9 s） |
+| `automationexercise.com` | 无（**不是邀请制**，公开测试站） | **无** | 无 | ✅ 仅验证探站（2026-11-18）——它暴露了三个探站误判，见 [`docs/PROTOCOL-AUTOMATIONEXERCISE.md`](docs/PROTOCOL-AUTOMATIONEXERCISE.md) |
+
+> 第二个站点只跑了 `probe`，没有跑 `run` / `verify`：它不是邀请制，没有邀请码可走完整链路。
+> 它的价值是**压测探站器的假设**，不是"又多支持一个站"。code 型验证和 Turnstile 站点仍然只有
+> "检测到就停"的路径，没有跑通的样本。
 
 其余站点请先跑 `probe`，看 `verdict` 给不给过。
 
@@ -189,7 +194,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 114 passed
+python -m pytest tests/ -q          # 121 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 

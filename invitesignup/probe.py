@@ -60,6 +60,26 @@ CAPTCHA_KEYWORDS = {
     "slider": ("slideverify", "geetest", "slidercaptcha", "puzzle-captcha"),
 }
 
+# Sources that mention a captcha product without the *site* using it.
+#
+# Google's ad stack loads https://www.google.com/recaptcha/api2/aframe on any
+# page with AdSense -- it is an ad-quality frame, not a challenge shown to the
+# user.  Counting it made a plain Django signup page report "recaptcha", which
+# would have blocked a site that has no captcha at all.
+CAPTCHA_FALSE_FRIENDS = (
+    "google.com/recaptcha/api2/aframe",
+    "adtrafficquality.google",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+)
+
+
+def _is_false_friend(url: str) -> bool:
+    lowered = (url or "").lower()
+    return any(bad in lowered for bad in CAPTCHA_FALSE_FRIENDS)
+
 ENDPOINT_FRAGMENT_NEEDLES = (
     "/sign-up/email", "/sign-in/email", "/send-verification-email",
     "/verify-email", "/get-session", "/check-email", "/referral/check-email",
@@ -213,7 +233,8 @@ def classify_captcha(scan: Dict[str, Any], html: str, dom: Optional["DomInfo"] =
     runner re-checks the live DOM before it does anything irreversible.
     """
     dom = dom or DomInfo()
-    dom_sources = " ".join(list(dom.frames) + list(dom.scripts)).lower()
+    real_sources = [u for u in list(dom.frames) + list(dom.scripts) if not _is_false_friend(u)]
+    dom_sources = " ".join(real_sources).lower()
     if dom.captcha_nodes:
         dom_sources += " captcha challenge"
     for kind, needles in CAPTCHA_KEYWORDS.items():
@@ -366,8 +387,15 @@ DOM_SCRIPT = """() => {
     const scripts = [...document.querySelectorAll('script[src]')].map(s => s.getAttribute('src') || '');
     // Captcha widgets are usually mounted as a container element with a
     // telling id/class/name, even before the iframe appears.
-    const captchaNodes = [...document.querySelectorAll('[id*="captcha" i],[class*="captcha" i],[name*="captcha" i],[id*="turnstile" i],[class*="turnstile" i],[id*="challenge" i],[class*="challenge" i]')]
-        .length;
+    // Count only elements that are actually rendered.  Ad stacks and support
+    // widgets leave zero-size captcha-named nodes in the DOM; counting those
+    // reports a challenge on a page that never shows one.
+    const captchaNodes = [...document.querySelectorAll('[id*="captcha" i],[class*="captcha" i],[name*="captcha" i],[id*="turnstile" i],[class*="turnstile" i]')]
+        .filter(el => {
+            if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 20 && r.height > 20;
+        }).length;
     return {inputs, buttons, labels, frames, scripts, captchaNodes};
 }"""
 
@@ -675,6 +703,29 @@ def looks_generated(element_id: str) -> bool:
     return bool(GENERATED_ID_RE.search(element_id))
 
 
+# Words that mark an input as belonging to a newsletter / search / login box
+# rather than the registration form itself.
+INCIDENTAL_HINTS = (
+    "subscribe", "newsletter", "susbscribe",   # sic: the real page misspells it
+    "search", "coupon", "promo", "chat",
+)
+
+
+def looks_incidental(element: Dict[str, Any]) -> bool:
+    """True when the input almost certainly is not part of the signup form.
+
+    The attribute ladder (id > name > testid > type) says nothing about
+    *which form* an input belongs to.  A page can carry a login form, a
+    signup form and a footer newsletter box at once; picking by attribute
+    alone happily selects the newsletter.
+    """
+    blob = " ".join(
+        str(element.get(key) or "")
+        for key in ("id", "name", "testid", "placeholder")
+    ).lower()
+    return any(hint in blob for hint in INCIDENTAL_HINTS)
+
+
 def infer_selectors(dom: DomInfo) -> Dict[str, str]:
     """Map DOM inputs onto the semantic roles the runner needs.
 
@@ -698,6 +749,15 @@ def infer_selectors(dom: DomInfo) -> Dict[str, str]:
 
     def pick(cands: List[Dict[str, Any]], want_type: str = "") -> Optional[Dict[str, Any]]:
         pool = [e for e in cands if not want_type or e.get("type") == want_type]
+        # An input that belongs to a *newsletter* box is not the registration
+        # field, no matter how good its id is.  A real page had three email
+        # inputs -- login, signup and a footer subscribe box -- and the
+        # footer's id ("#susbscribe_email") beat the signup field's plain
+        # name purely because the id rule ran first.  Context beats the
+        # attribute ladder.
+        pool = [e for e in pool if not looks_incidental(e)]
+        if not pool:
+            return None
         for key in ("id", "name", "testid", "type"):
             for el in pool:
                 if el.get(key):
@@ -960,9 +1020,19 @@ def probe(
             invite_code = str(payload[key])
             break
     if not invite_code:
+        # Only fall back to the last path segment when the URL actually looks
+        # like an invite link.  A plain "/signup" ends in six alphanumerics
+        # too, and treating that as a code made a non-invite site report
+        # "invite code did not validate" -- a confidently wrong verdict.
         parts = [p for p in parsed.path.split("/") if p]
-        if parts and len(parts[-1]) >= 6 and parts[-1].isalnum():
-            invite_code = parts[-1]
+        looks_like_invite = any(
+            marker in parsed.path.lower()
+            for marker in ("/invite/", "/invitation/", "/ref/", "/referral/")
+        )
+        if looks_like_invite and parts:
+            candidate = parts[-1]
+            if len(candidate) >= 6 and candidate.isalnum() and not candidate.isdigit():
+                invite_code = candidate
 
     profile = SiteProfile(
         site=site,

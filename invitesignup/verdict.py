@@ -76,8 +76,22 @@ def decide(profile: SiteProfile, tos_forbids_automation: bool = False) -> Verdic
         return v
 
     if not profile.invite_valid:
-        v.reasons.append("invite code did not validate")
-        v.blockers.append("invite_invalid")
+        # Distinguish "there was no invite code to check" from "the code was
+        # checked and refused".  They need different actions: the first means
+        # this may not be an invite site at all, the second means the link is
+        # dead.  Reporting both as "did not validate" sends the reader looking
+        # for a dead link that never existed.
+        if not profile.invite_code:
+            v.reasons.append(
+                "no invite code was found on this page; "
+                "this may not be an invite-gated site"
+            )
+            v.blockers.append("invite_absent")
+            v.human_step = "confirm this URL really is an invite link"
+        else:
+            v.reasons.append("invite code did not validate")
+            v.blockers.append("invite_invalid")
+            v.human_step = "check the invite link; it may be expired or mistyped"
         v.state = BLOCKED_FACTS
         return v
 

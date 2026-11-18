@@ -23,6 +23,7 @@ from invitesignup.probe import (  # noqa: E402
     infer_selectors,
     infer_steps,
     infer_verification,
+    looks_incidental,
     role_endpoints,
 )
 
@@ -72,6 +73,28 @@ def test_classify_captcha_detects_a_captcha_widget_element():
 
 def test_classify_captcha_none_when_clean():
     assert classify_captcha({"captcha_hits": {}}, "<html></html>", DomInfo()) == "none"
+
+
+def test_adsense_recaptcha_frame_is_not_a_challenge():
+    # Google's ad stack loads google.com/recaptcha/api2/aframe on any page
+    # with AdSense.  It is an ad-quality frame, not a challenge shown to the
+    # user, and counting it made a plain signup page report "recaptcha".
+    dom = DomInfo(frames=["https://www.google.com/recaptcha/api2/aframe"])
+    assert classify_captcha({"captcha_hits": {}}, "", dom) == "none"
+
+
+def test_ad_network_frames_are_ignored():
+    dom = DomInfo(frames=[
+        "https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-1",
+        "https://ep2.adtrafficquality.google/sodar/sodar2/257/runner.html",
+        "https://tpc.googlesyndication.com/safeframe/1-0-1/html/container.html",
+    ])
+    assert classify_captcha({"captcha_hits": {}}, "", dom) == "none"
+
+
+def test_a_real_recaptcha_frame_still_counts():
+    dom = DomInfo(frames=["https://www.google.com/recaptcha/api2/anchor?k=abc"])
+    assert classify_captcha({"captcha_hits": {}}, "", dom) == "recaptcha"
 
 
 def test_captcha_keywords_are_tuples_of_needles():
@@ -213,6 +236,77 @@ def test_find_sign_in_endpoint_composed_from_a_fragment():
 
 def test_find_sign_in_endpoint_returns_empty_when_absent():
     assert find_sign_in_endpoint(["/api/credits"], []) == ""
+
+
+def test_newsletter_input_is_not_chosen_as_the_signup_field():
+    # A real page carried three email inputs: login, signup, and a footer
+    # subscribe box.  The footer's "#susbscribe_email" (sic) won on the id
+    # rule and the whole flow filled the wrong field.
+    dom = DomInfo(
+        inputs=[
+            {"type": "email", "id": "", "name": "email", "testid": "",
+             "placeholder": "Email Address"},
+            {"type": "email", "id": "susbscribe_email", "name": "", "testid": "",
+             "placeholder": "Your email address"},
+        ],
+        buttons=[],
+    )
+    selectors = infer_selectors(dom)
+    assert "susbscribe" not in selectors["email"], selectors
+    assert selectors["email"] == 'input[name="email"]', selectors
+
+
+def test_incidental_input_detection():
+    assert looks_incidental({"id": "susbscribe_email", "name": "", "testid": "",
+                             "placeholder": ""}) is True
+    assert looks_incidental({"id": "", "name": "newsletter", "testid": "",
+                             "placeholder": ""}) is True
+    assert looks_incidental({"id": "", "name": "email", "testid": "",
+                             "placeholder": "Email Address"}) is False
+
+
+def test_only_incidental_inputs_leaves_no_email_selector():
+    # Better to report nothing than to confidently pick the newsletter box.
+    dom = DomInfo(
+        inputs=[{"type": "email", "id": "susbscribe_email", "name": "", "testid": "",
+                 "placeholder": "Your email address"}],
+        buttons=[],
+    )
+    assert "email" not in infer_selectors(dom)
+
+
+def test_absent_invite_code_is_reported_differently_from_a_bad_one():
+    # "no code found" and "code refused" need different actions: the first
+    # means the URL may not be an invite link at all, the second means the
+    # link is dead.  Reporting both as "did not validate" sends the reader
+    # hunting for a dead link that never existed.
+    from invitesignup.profile import SiteProfile
+    from invitesignup.verdict import BLOCKED_FACTS, decide
+
+    absent = SiteProfile(
+        site="example.test",
+        base_url="https://example.test",
+        invite_url="https://example.test/signup",
+        invite_code="",
+        invite_valid=None,
+        captcha="none",
+    )
+    v_absent = decide(absent)
+    assert v_absent.state == BLOCKED_FACTS
+    assert "invite_absent" in v_absent.blockers
+    assert any("may not be an invite-gated site" in r for r in v_absent.reasons)
+
+    bad = SiteProfile(
+        site="example.test",
+        base_url="https://example.test",
+        invite_url="https://example.test/invite/DEAD00",
+        invite_code="DEAD00",
+        invite_valid=False,
+        captcha="none",
+    )
+    v_bad = decide(bad)
+    assert "invite_invalid" in v_bad.blockers
+    assert any("did not validate" in r for r in v_bad.reasons)
 
 
 if __name__ == "__main__":
