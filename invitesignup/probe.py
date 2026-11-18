@@ -1004,6 +1004,20 @@ def probe(
             selectors.setdefault(key, value)
 
     steps = infer_steps(dom1)
+
+    # A page with no email or password field is not a form-based signup, no
+    # matter what else it offers.  make.fun's invite page renders an
+    # "invited you" banner and a Sign-in button; the actual signup is a
+    # Solana wallet signature, which no form filler can produce.  Detecting
+    # this here turns "no invite code found" (misleading) into "this site does
+    # not use a form" (actionable).
+    form_less = not any(
+        (el.get("type") in ("email", "password") or
+         "email" in (el.get("name") or "").lower() or
+         "password" in (el.get("name") or "").lower())
+        for el in (dom1.inputs + (dom2.inputs if dom2 else []))
+    )
+    findings["form_less_signup"] = form_less
     if dom2 is not None:
         for step in infer_steps(dom2):
             if step not in steps:
@@ -1092,6 +1106,7 @@ def probe(
         sign_in_endpoint=sign_in,
         locale=locale,
         probed_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        form_less_signup=bool(form_less),
     )
     profile.selector_stability = {k: profile.stability_of(k) for k in profile.selectors}
 

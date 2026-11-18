@@ -26,6 +26,7 @@ NEEDS_HUMAN = "needs-human-in-loop"
 BLOCKED_CAPTCHA = "blocked-by-captcha"
 BLOCKED_TOS = "blocked-by-tos"
 BLOCKED_FACTS = "blocked-missing-facts"
+BLOCKED_WALLET = "blocked-wallet-signup"
 
 
 @dataclass
@@ -60,6 +61,24 @@ def _captcha_blocks(captcha: str) -> bool:
     return captcha not in ("", "none", "suspected")
 
 
+# Endpoint shapes that mean "this site registers a wallet, not a person".
+# A signature challenge is not something a form filler can satisfy, so this
+# has to be recognised and reported as such rather than as "no invite code".
+WALLET_ENDPOINT_MARKERS = (
+    "/api/auth/solana/key",
+    "/api/auth/wallet",
+    "/api/auth/siwe",
+    "/api/auth/ethereum",
+)
+
+
+def _looks_wallet_based(profile: SiteProfile) -> bool:
+    paths = list((profile.endpoints or {}).values())
+    paths += list((profile.endpoints_state or {}).values())
+    joined = " ".join(p.lower() for p in paths if isinstance(p, str))
+    return any(marker in joined for marker in WALLET_ENDPOINT_MARKERS)
+
+
 def decide(profile: SiteProfile, tos_forbids_automation: bool = False) -> Verdict:
     """Decide whether a profile may be automated.
 
@@ -73,6 +92,23 @@ def decide(profile: SiteProfile, tos_forbids_automation: bool = False) -> Verdic
         v.state = BLOCKED_TOS
         v.blockers.append("site terms forbid automation (declared by the operator)")
         v.reasons.append("terms forbid automation")
+        return v
+
+    # A page with no email/password field is not a form-based signup.  Check
+    # this before the invite-code checks: on such a site the invite code is
+    # irrelevant, and reporting "no invite code found" sends the reader
+    # looking for a broken link that is actually fine.
+    if getattr(profile, "form_less_signup", False):
+        v.state = BLOCKED_WALLET
+        v.blockers.append("no_signup_form")
+        v.reasons.append(
+            "this page has no email or password field, so it does not sign up "
+            "through a form (usually a wallet signature or OAuth-only)"
+        )
+        v.human_step = (
+            "register this one by hand in a browser; a form-filling pipeline "
+            "cannot and should not hold a wallet key or an OAuth session"
+        )
         return v
 
     if not profile.invite_valid:
@@ -93,6 +129,18 @@ def decide(profile: SiteProfile, tos_forbids_automation: bool = False) -> Verdic
             v.blockers.append("invite_invalid")
             v.human_step = "check the invite link; it may be expired or mistyped"
         v.state = BLOCKED_FACTS
+        return v
+
+    if _looks_wallet_based(profile):
+        v.state = BLOCKED_WALLET
+        v.blockers.append("wallet_signup")
+        v.reasons.append(
+            "this site signs up with a crypto wallet, not an email form"
+        )
+        v.human_step = (
+            "this pipeline fills forms; it cannot and should not hold a wallet "
+            "private key. Do this one by hand."
+        )
         return v
 
     if _captcha_blocks(profile.captcha):

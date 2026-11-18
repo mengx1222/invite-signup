@@ -126,6 +126,12 @@ class SiteProfile:
     # "selectors: inferred" is a prompt for a human to look, not a defect.
     confidence: Dict[str, str] = field(default_factory=dict)
 
+    # True when the landing page offers no email/password input at all.  Such
+    # a site cannot be registered by filling a form -- it is almost always a
+    # wallet signature or an OAuth-only flow -- and saying so is far more
+    # useful than "no invite code found".
+    form_less_signup: bool = False
+
     # ---------------- serialisation ----------------
 
     def to_dict(self) -> Dict[str, Any]:

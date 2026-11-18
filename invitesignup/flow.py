@@ -264,6 +264,8 @@ def _kind_for(verdict) -> str:
     joined = " ".join(getattr(verdict, "blockers", []) or []).lower()
     if "captcha" in joined:
         return "captcha"
+    if "no_signup_form" in joined or "wallet" in joined:
+        return "config"
     if "tos" in joined:
         return "site_rejected"
     if "invite" in joined:
@@ -274,6 +276,10 @@ def _kind_for(verdict) -> str:
 def _plain_reason(verdict) -> str:
     """Say what stopped us in words a non-engineer can act on."""
     joined = " ".join(getattr(verdict, "blockers", []) or []).lower()
+    if "no_signup_form" in joined or "wallet" in joined:
+        return ("这个页面没有邮箱/密码输入框，它不是用表单注册的"
+                "（通常是钱包签名或只能第三方登录）。这个工具只会填表单，"
+                "也不会替你保管钱包私钥，所以这一类需要你手动注册一次。")
     if "captcha" in joined:
         return ("这个站点有验证码，本工具不会绕过。"
                 "请先在浏览器里手动注册一次；如果验证码其实没出现，把诊断信息发我。")

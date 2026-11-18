@@ -127,3 +127,38 @@ def test_verify_helper_joins_the_same_way():
     assert _absolute("https://example.test/", "api/me") == "https://example.test/api/me"
     assert _absolute("https://example.test", "https://other.test/x") == "https://other.test/x"
     assert _absolute("https://example.test", "") == "https://example.test"
+
+
+def test_a_page_without_a_form_is_reported_as_such_not_as_a_bad_invite():
+    """make.fun's invite page has an "invited you" banner and a Sign in button.
+
+    Its actual signup is a Solana wallet signature.  Reporting that as "no
+    invite code found" sends the reader hunting for a broken link that is
+    perfectly fine -- the invite code is valid, the page just has no form.
+    """
+    from invitesignup.verdict import BLOCKED_WALLET, decide
+
+    p = _profile(form_less_signup=True, invite_code="", invite_valid=None)
+    v = decide(p)
+    assert v.state == BLOCKED_WALLET
+    assert "no_signup_form" in v.blockers
+    # The invite-code wording must not be what the user sees.
+    assert not any("invite code did not validate" in r for r in v.reasons)
+    assert any("no email or password field" in r for r in v.reasons)
+
+
+def test_a_wallet_endpoint_alone_is_enough_to_stop():
+    from invitesignup.verdict import BLOCKED_WALLET, decide
+
+    p = _profile(endpoints={"sign-up": "/api/auth/solana/key"})
+    v = decide(p)
+    assert v.state == BLOCKED_WALLET
+    assert "wallet_signup" in v.blockers
+
+
+def test_a_normal_form_site_is_not_mistaken_for_a_wallet_site():
+    from invitesignup.verdict import AUTOMATABLE, decide
+
+    p = _profile(form_less_signup=False,
+                 endpoints={"sign-up": "/api/auth/sign-up/email"})
+    assert decide(p).state == AUTOMATABLE
