@@ -49,6 +49,7 @@ class RunResult:
     verified: bool = False
     credits: Any = None
     snapshot: str = ""
+    page_text: str = ""
     mail_dump: str = ""
     errors: List[str] = field(default_factory=list)
     api_trace: List[str] = field(default_factory=list)
@@ -65,6 +66,7 @@ class RunResult:
             "verified": self.verified,
             "credits": self.credits,
             "snapshot": self.snapshot,
+            "page_text": self.page_text,
             "mail_dump": self.mail_dump,
             "errors": self.errors,
             "verdict_state": self.verdict_state,
@@ -101,6 +103,7 @@ def run_registration(
     tos_forbids_automation: bool = False,
     poll_timeout: int = 120,
     on_event: Optional[EventFn] = None,
+    link_prompt: Optional[Callable[[], Optional[str]]] = None,
 ) -> RunResult:
     """Execute one registration described by ``profile``.
 
@@ -127,6 +130,7 @@ def run_registration(
         tos_forbids_automation=tos_forbids_automation,
         poll_timeout=poll_timeout,
         on_event=on_event,
+        link_prompt=link_prompt,
     )
     _classify_outcome(result)
     _persist(book, profile, result, key, started, round(time.time() - started, 2))
@@ -174,6 +178,7 @@ def _attempt(
     tos_forbids_automation: bool,
     poll_timeout: int,
     on_event: Optional[EventFn] = None,
+    link_prompt: Optional[Callable[[], Optional[str]]] = None,
 ) -> RunResult:
     """Do the work.  Never persists -- ``run_registration`` owns that."""
     from playwright.sync_api import sync_playwright
@@ -276,6 +281,20 @@ def _attempt(
                 return result
             page.wait_for_timeout(2500)
 
+            # The site may refuse the mailbox right here, before any mail is
+            # sent.  Catching it now saves a two-minute wait and, more
+            # importantly, says *why* instead of "no verification link".
+            page_text = _visible_error_text(page)
+            if page_text and _mailbox_was_rejected(page_text):
+                result.stage = "mailbox-rejected"
+                result.errors.append(f"the site refused this mailbox: {page_text[:200]}")
+                result.notes = (
+                    "supply a real inbox with --email <address>; "
+                    "the run will then stop at the verification step so you can paste the link"
+                )
+                _emit(on_event, "stage", stage=result.stage, message=page_text[:160])
+                return result
+
             # --- password step ---
             result.stage = "password"
             _emit(on_event, "stage", stage=result.stage, message="setting the password")
@@ -302,26 +321,38 @@ def _attempt(
             mode = profile.verification.mode
             if mode == "link":
                 result.stage = "await-verification-link"
-                _emit(on_event, "stage", stage=result.stage,
-                      message=f"waiting for mail (up to {poll_timeout}s)")
-                if mailbox is None:
-                    result.errors.append("verification needs a mailbox but none was available")
-                    return result
-                poll = mailbox.poll(
-                    mode="link",
-                    pattern=profile.verification.pattern,
-                    link_hints=_link_hints(profile),
-                    timeout_secs=poll_timeout,
-                    not_before=started,
-                    before_ids=mail_baseline,
-                )
-                if not poll.found:
-                    result.errors.append("no verification link arrived: " + "; ".join(poll.errors[-3:]))
-                    return result
+                if link_prompt is not None:
+                    # Half-automatic mode: the site sends the mail to a real
+                    # inbox this tool cannot read, so a person supplies the
+                    # link.  Everything before and after stays automated.
+                    _emit(on_event, "stage", stage=result.stage,
+                          message="waiting for you to paste the verification link")
+                    link = link_prompt()
+                    if not link:
+                        result.errors.append("no verification link was supplied")
+                        return result
+                else:
+                    _emit(on_event, "stage", stage=result.stage,
+                          message=f"waiting for mail (up to {poll_timeout}s)")
+                    if mailbox is None:
+                        result.errors.append("verification needs a mailbox but none was available")
+                        return result
+                    poll = mailbox.poll(
+                        mode="link",
+                        pattern=profile.verification.pattern,
+                        link_hints=_link_hints(profile),
+                        timeout_secs=poll_timeout,
+                        not_before=started,
+                        before_ids=mail_baseline,
+                    )
+                    if not poll.found:
+                        result.errors.append("no verification link arrived: " + "; ".join(poll.errors[-3:]))
+                        return result
+                    link = poll.payload
                 result.stage = "confirm-link"
                 _emit(on_event, "stage", stage=result.stage, message="opening the verification link")
                 try:
-                    page.goto(poll.payload, wait_until="domcontentloaded", timeout=40000)
+                    page.goto(link, wait_until="domcontentloaded", timeout=40000)
                 except Exception as exc:
                     result.errors.append(f"verification link navigation: {type(exc).__name__}: {exc}")
                 deadline = time.time() + 30
@@ -366,7 +397,10 @@ def _attempt(
                     result.snapshot = str(shot)
                 except Exception:
                     pass
+                result.page_text = _visible_error_text(page)
                 result.errors.append("no session after the flow")
+                if result.page_text:
+                    result.errors.append(f"page says: {result.page_text[:200]}")
                 return result
 
             result.verified = bool(session_user.get("emailVerified", True))
@@ -380,6 +414,10 @@ def _attempt(
         except Exception as exc:
             result.stage = result.stage or "exception"
             result.errors.append(f"{type(exc).__name__}: {exc}")
+            try:
+                result.page_text = _visible_error_text(page)
+            except Exception:
+                pass
             _emit(on_event, "error", stage=result.stage, message=str(exc))
         finally:
             try:
@@ -427,6 +465,7 @@ def _persist(book, profile: SiteProfile, result: RunResult, key: str,
             "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "duration_s": duration,
             "snapshot": result.snapshot,
+            "page_text": result.page_text[:300],
             "mail_dump": result.mail_dump,
             "last_error": "; ".join(result.errors[-3:]) if result.errors else "",
             "notes": result.notes,
@@ -524,3 +563,42 @@ def _in_page_session(page, profile: SiteProfile) -> Optional[Dict[str, Any]]:
     if isinstance(payload, dict):
         return payload.get("user") or None
     return None
+
+
+# Phrases sites use when they refuse a mailbox.  Matching these early turns a
+# 120-second wait-for-mail into an immediate, actionable failure.
+MAILBOX_REJECT_HINTS = (
+    "disposable", "temporary email", "temp mail", "throwaway",
+    "domain is not allowed", "domain not allowed", "invalid domain",
+    "use a real email", "not accept", "邮箱", "临时邮箱",
+)
+
+
+def _visible_error_text(page, limit: int = 400) -> str:
+    """Collect whatever the page is currently telling the user.
+
+    A screenshot shows a human what happened; this shows the *reason* without
+    opening the image.  Both are kept, because "stuck at the password step"
+    is far less useful than the red text next to the password field.
+    """
+    try:
+        return page.evaluate(
+            """(limit) => {
+                const sel = '[role="alert"], [data-err], [data-emailmsg], .error, .text-red-500, ' +
+                            '.text-destructive, [aria-invalid="true"] ~ *';
+                const parts = [];
+                document.querySelectorAll(sel).forEach(el => {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (t) parts.push(t);
+                });
+                return parts.join(' | ').slice(0, limit);
+            }""",
+            limit,
+        ) or ""
+    except Exception:
+        return ""
+
+
+def _mailbox_was_rejected(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(hint in lowered for hint in MAILBOX_REJECT_HINTS)

@@ -30,10 +30,17 @@ python -m invitesignup probe "https://yila.ai/en/invite/YL-XXXX" --out profiles/
 ```
 [verdict] [automatable] verification is link-based; a mailbox is required
 [human ] if the disposable mailbox is rejected, supply a real inbox and paste the link
+[conf  ] inferred, not measured: endpoints
+[review] confirm before trusting this profile:
+         - no account-state endpoint (balance will not be reported)
 [gate  ] this profile needs a human ack before running:
          - verification is link-based; a mailbox is required
          re-run `run` with --yes once you have read the above
 ```
+
+`[conf]` 列出**推断**而非实测的项。`measured` 表示这次探站真的观察到了；
+`inferred` 表示从代码或结构里推出来的，值得人看一眼。`[review]` 更直接，
+把需要确认的地方列成清单（选择器脆弱、验证模式未知、缺 state 端点等）。
 
 | verdict | 含义 | 下一步 |
 | :--- | :--- | :--- |
@@ -60,6 +67,7 @@ python -m invitesignup run --profile profiles/yila.json --yes
 | 想做的事 | 加什么 |
 | :--- | :--- |
 | 用自己邮箱（站点拒临时邮箱时） | `--email you@outlook.com` |
+| 用自己邮箱，发信后停下来让你贴链接 | `--email you@outlook.com --wait-link` |
 | 想看着它跑 | `--headed` |
 | 同一个邀请码再跑一次 | `--force`（默认会被去重挡） |
 | 用满剩余名额 | `--allow-multi`（**先想清楚**） |
@@ -117,6 +125,7 @@ python -m invitesignup ledger
 | `blocked-by-captcha` | 别绕。手动注册一次，或换站 |
 | 收不到验证邮件 | 看 `output/mail_dump_<site>.txt`——信到了但解析失败，和没到是两回事 |
 | 临时邮箱被拒 | 换 `--email` 用自己邮箱，脚本会停下来让你贴链接 |
+| 提示 `mailbox-rejected` | 站点明确拒了这个域名。加 `--email` 换真实邮箱，或加 `--wait-link` 走半自动 |
 | `skipped-duplicate` | 今天这个码已经成功过了。确实要重跑加 `--force` |
 | `blocked-by-quota` | 名额用完了。这是保护，不是 bug |
 | 探站说可以、跑起来被拦 | 站点改版了。重新 `probe` 一次 |
@@ -199,3 +208,41 @@ python -m invitesignup web
 
 怎么知道该填什么：登录进站点，开 DevTools → Network，看仪表盘加载时打了哪些
 返回余额的接口。
+
+---
+
+## 半自动模式（`--wait-link`）
+
+有些站会拒掉所有一次性邮箱，而验证邮件只能发到你能访问的真实邮箱。这时：
+
+```powershell
+python -m invitesignup run --profile profiles/site.json `
+    --email you@outlook.com --wait-link --yes
+```
+
+流程变成：
+
+```
+自动打开邀请页 → 自动填邮箱 → 自动填密码 → 自动提交
+        ↓
+   停下来，等你把邮件里的链接粘进来
+        ↓
+自动打开链接 → 自动确认会话 → 自动读额度 → 落台账
+```
+
+**只有中间那一步是人工的**，前后仍然自动化。这比"跑失败了再去手动注册一遍"省事得多。
+
+粘空行（直接回车）等于放弃，运行会记为失败。
+
+### 站点明确拒信时会立刻停
+
+如果站点在**提交邮箱时**就报"不支持一次性邮箱"，runner 会当场识别并停下：
+
+```
+[stage] mailbox-rejected
+the site refused this mailbox: Disposable email addresses are not allowed
+→ supply a real inbox with --email <address>
+```
+
+而不是等两分钟才说"没收到验证邮件"。这两种情况的处理方式完全不同，
+所以必须分开报。

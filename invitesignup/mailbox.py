@@ -451,6 +451,18 @@ class Mailbox:
             "all mailbox providers failed:\n  " + "\n  ".join(errors)
         )
 
+    def create_preferring(self, preferred: Sequence[str], fallback: Sequence[str] = DEFAULT_ORDER) -> str:
+        """Create a mailbox, trying the site's preferred providers first.
+
+        Some sites always refuse a particular provider's domains.  Recording
+        that per site (``profile.notes``-adjacent, or just a CLI flag) turns
+        every run from "fail on mail.tm, then succeed on the second try" into
+        "succeed on the first try".
+        """
+        order = list(dict.fromkeys([p for p in preferred if p in PROVIDERS]
+                                   + [p for p in fallback if p in PROVIDERS]))
+        return self.create(order)
+
     # ---------------- dumping ----------------
 
     def _dump(self, message: Message, body: str) -> None:

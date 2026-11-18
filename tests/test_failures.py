@@ -74,3 +74,28 @@ def test_unclassified_failure_is_not_retried():
 def test_should_retry_wrapper_matches_classify():
     assert should_retry("timeout") is True
     assert should_retry("timeout", mail_requested=True) is False
+
+
+def test_mailbox_rejection_is_needs_human_not_retry():
+    # Retrying with the same address would be refused again; the fix is a
+    # different mailbox, which only a person can supply.
+    for message in (
+        "disposable email addresses are not allowed",
+        "Please use a real email address",
+        "email domain is not allowed",
+    ):
+        c = classify(message)
+        assert c.kind is Kind.MAILBOX_REJECTED, message
+        assert c.action is Action.NEEDS_HUMAN, message
+        assert c.retryable is False
+        assert c.needs_human is True
+
+
+def test_mailbox_rejection_beats_generic_site_rejection():
+    # "not allowed" also matches the site-rejected signatures, so ordering
+    # matters: the more specific kind must win.
+    assert classify("disposable domain not allowed").kind is Kind.MAILBOX_REJECTED
+
+
+def test_chinese_mailbox_rejection_is_recognised():
+    assert classify("不支持临时邮箱").kind is Kind.MAILBOX_REJECTED

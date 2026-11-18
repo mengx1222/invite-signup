@@ -24,6 +24,7 @@ class Kind(str, Enum):
     TRANSPORT = "transport"        # DNS, connect, TLS, read timeout -- nothing was committed
     RATE_LIMIT = "rate_limit"      # 429 / explicit throttle
     MAIL_TIMEOUT = "mail_timeout"  # mail never arrived
+    MAILBOX_REJECTED = "mailbox_rejected"  # the site refused the mailbox address
     SITE_REJECTED = "site_rejected"  # the site said no: exists, invalid invite, tos
     CAPTCHA = "captcha"            # a challenge appeared
     VERIFICATION = "verification"  # account exists but could not be proven
@@ -37,6 +38,7 @@ class Action(str, Enum):
     RETRY = "retry"          # safe: nothing was committed
     STOP = "stop"            # do not retry, do not substitute another account
     ABORT_BATCH = "abort"    # stop the whole batch, not just this item
+    NEEDS_HUMAN = "needs_human"  # recoverable, but only by a person
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,10 @@ class Classification:
     def retryable(self) -> bool:
         return self.action is Action.RETRY
 
+    @property
+    def needs_human(self) -> bool:
+        return self.action is Action.NEEDS_HUMAN
+
     def summary(self) -> str:
         return f"{self.kind.value}/{self.action.value}: {self.reason}"
 
@@ -58,6 +64,12 @@ class Classification:
 _SIGNATURES = (
     (Kind.CAPTCHA, ("captcha", "turnstile", "hcaptcha", "recaptcha", "challenge is mounted")),
     (Kind.RATE_LIMIT, ("429", "too many requests", "rate limit")),
+    (Kind.MAILBOX_REJECTED, (
+        "disposable", "temporary email", "temp mail", "throwaway",
+        "email domain is not allowed", "domain not allowed", "invalid domain",
+        "email domain rejected", "domain rejected", "use a real email",
+        "邮箱域名", "临时邮箱",
+    )),
     (Kind.SITE_REJECTED, (
         "user_already_exists", "already exists", "already registered",
         "invalid invite", "invite code", "not authorized", "forbidden",
@@ -103,6 +115,14 @@ def classify(error: str, *, mail_requested: bool = False) -> Classification:
             return Classification(kind, Action.RETRY, "transport failure before commit")
         if kind is Kind.CAPTCHA:
             return Classification(kind, Action.STOP, "a challenge is present; not attempted")
+        if kind is Kind.MAILBOX_REJECTED:
+            # Recoverable, but not by retrying: the same address will be
+            # refused again.  This is the one failure where the fix is a
+            # different mailbox supplied by a person.
+            return Classification(
+                kind, Action.NEEDS_HUMAN,
+                "the site refused this mailbox; supply a real inbox",
+            )
         if kind is Kind.SITE_REJECTED:
             return Classification(kind, Action.ABORT_BATCH, "the site refused this attempt")
         if kind is Kind.MAIL_TIMEOUT:

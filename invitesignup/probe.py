@@ -398,6 +398,12 @@ class TrafficLog:
 
     paths: List[str] = field(default_factory=list)
     methods: Dict[str, List[str]] = field(default_factory=dict)
+    # Not every site puts its API under /api/.  /v1/, /graphql and custom auth
+    # paths are common enough that hardcoding one prefix silently drops them.
+    prefixes: tuple = ("/api/", "/v1/", "/v2/", "/graphql", "/auth/")
+
+    def matches(self, path: str) -> bool:
+        return any(path.startswith(prefix) for prefix in self.prefixes)
 
     def add(self, method: str, url: str, base_url: str = "") -> None:
         try:
@@ -405,7 +411,7 @@ class TrafficLog:
         except ValueError:
             return
         path = parsed.path
-        if not path.startswith("/api/"):
+        if not self.matches(path):
             return
         if path not in self.paths:
             self.paths.append(path)
@@ -589,6 +595,68 @@ def _advance_and_capture(url: str, headless: bool = True, locale: str = "en-US",
                     break
             page.wait_for_timeout(2500)
             return _read_dom(page), log
+        finally:
+            browser.close()
+
+
+def probe_dom_and_traffic(url: str, headless: bool = True, locale: str = "en-US",
+                          advance: bool = True,
+                          probe_email: Optional[str] = None):
+    """One browser visit that yields the initial DOM, the advanced DOM and traffic.
+
+    Launching a browser is the slowest part of a probe, so the three things a
+    probe needs from a live page are collected in one pass:
+
+    * the form as it first appears
+    * the form after stepping past the first field (the password fields often
+      only render then)
+    * every ``/api/`` request the visit produced
+
+    Previously this was two launches, which cost roughly 40% of the total
+    probe time for no benefit.
+    """
+    from playwright.sync_api import sync_playwright
+
+    email = probe_email or PROBE_EMAIL_TEMPLATE.format(rand=str(int(time.time()))[-6:])
+    log = TrafficLog()
+    with sync_playwright() as p:
+        browser = launch_browser(p, headless=headless)
+        try:
+            context = browser.new_context(no_viewport=True, locale=locale)
+            page = context.new_page()
+            page.on("request", lambda r: log.add(r.method, r.url))
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(2500)
+
+            initial = _read_dom(page)
+            if not advance:
+                return initial, None, log
+
+            mail = page.locator('input[type="email"]').first
+            if mail.count() == 0:
+                return initial, initial, log
+
+            mail.click()
+            mail.type(email, delay=30)
+            page.wait_for_timeout(400)
+            clicked = False
+            for selector in ('button[type="submit"]', 'button:not([disabled])'):
+                buttons = page.locator(selector)
+                for i in range(buttons.count()):
+                    b = buttons.nth(i)
+                    try:
+                        text = (b.inner_text() or "").strip()
+                    except Exception:
+                        continue
+                    if not text or "google" in text.lower():
+                        continue
+                    b.click()
+                    clicked = True
+                    break
+                if clicked:
+                    break
+            page.wait_for_timeout(2500)
+            return initial, _read_dom(page), log
         finally:
             browser.close()
 
@@ -817,25 +885,22 @@ def probe(
     cfg = probe_config(base_url)
     findings["config"] = cfg
 
-    _emit(on_event, "stage", stage="dom", message="reading the form")
-    dom1 = dom_probe(invite_url, headless=headless, locale=locale)
+    _emit(on_event, "stage", stage="dom",
+          message="reading the form" + (" and stepping past the first field" if advance else ""))
+    # One launch yields the initial DOM, the advanced DOM and the request log.
+    # Launching the browser is the slowest step, so doing it once matters.
+    dom1, dom2, traffic = probe_dom_and_traffic(
+        invite_url, headless=headless, locale=locale, advance=advance
+    )
     findings["dom_initial"] = {"url": dom1.url, "inputs": len(dom1.inputs), "buttons": len(dom1.buttons)}
-    dom2: Optional[DomInfo] = None
-    traffic: Optional[TrafficLog] = None
     if advance:
-        _emit(on_event, "stage", stage="advance",
-              message="stepping past the first field and recording traffic")
-        # One browser does both jobs: the DOM after advancing, and the request
-        # log for the whole visit.  Two separate launches would double the
-        # slowest part of the probe.
-        dom2, traffic = _advance_and_capture(invite_url, headless=headless, locale=locale)
-        if dom2.inputs:
+        if dom2 is not None and dom2.inputs:
             findings["advanced"] = True
             findings["dom_advanced"] = {"url": dom2.url, "inputs": len(dom2.inputs)}
         else:
             findings["advanced"] = False
-        if traffic is not None:
-            findings["traffic"] = traffic.to_dict()
+    if traffic is not None:
+        findings["traffic"] = traffic.to_dict()
 
     # The two DOMs describe two *different* steps of the same form: the first
     # holds the email field, the second holds the password fields that only
@@ -935,9 +1000,13 @@ def probe(
         "steps": "measured" if steps else "inferred",
         "verification": "measured" if verification["mode"] != "unknown" else "inferred",
         "captcha": "measured" if captcha != "suspected" else "inferred",
+        # "measured" means a request was actually seen.  Routes that only ever
+        # appeared as strings in a bundle are a guess about what will be
+        # called, so they stay "inferred" -- the distinction is the whole
+        # point of the field.
         "endpoints": (
-            "measured" if traffic is not None and traffic.paths else
-            ("inferred" if endpoints else "inferred")
+            "measured" if traffic is not None and traffic.paths
+            else ("inferred" if endpoints else "missing")
         ),
     }
 

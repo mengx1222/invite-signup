@@ -17,6 +17,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from . import ledger as ledger_mod
 from .profile import SiteProfile
@@ -122,6 +123,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         headless=not args.headed,
         tos_forbids_automation=args.tos_blocks,
         poll_timeout=args.poll_timeout,
+        link_prompt=_paste_link_prompt if args.wait_link else None,
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     print(f"[stage] {result.stage}  ok={result.ok}  verified={result.verified}")
@@ -131,6 +133,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"[acct ] {result.email}")
         print(f"[note ] credentials are also in {Path(args.output_dir) / 'accounts.jsonl'}")
     return 0 if result.ok else 1
+
+
+def _paste_link_prompt() -> Optional[str]:
+    """Ask the operator to paste the verification link.
+
+    Used by --wait-link: the account has been created and the mail has been
+    sent, but it went to an inbox this tool cannot read.  Everything before
+    and after this one step stays automated.
+    """
+    print()
+    print("=" * 68)
+    print("  the verification mail was sent to your own inbox.")
+    print("  open it, copy the verification link, and paste it below.")
+    print("=" * 68)
+    try:
+        link = input("[?] verification link (empty to abort): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return link or None
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -200,6 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--tos-blocks", action="store_true")
     r.add_argument("--yes", action="store_true",
                    help="acknowledge the verdict's caveats and proceed")
+    r.add_argument("--wait-link", action="store_true",
+                   help="stop after sending mail and let you paste the verification link")
     r.set_defaults(func=cmd_run)
 
     v = sub.add_parser("verify", help="prove an account exists (independent sign-in)")

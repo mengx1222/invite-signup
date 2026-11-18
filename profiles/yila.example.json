@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "site": "yila.ai",
   "base_url": "https://yila.ai",
   "invite_url": "https://yila.ai/en/invite/YL-EXAMPLE00",
@@ -54,5 +55,14 @@
   "endpoint_fields": {},
   "locale": "en-US",
   "notes": "",
-  "probed_at": "2026-11-17T21:50:20"
+  "probed_at": "2026-11-17T21:50:20",
+  "confidence": {
+    "invite_payload": "measured",
+    "attribution": "measured",
+    "selectors": "measured",
+    "steps": "measured",
+    "verification": "measured",
+    "captcha": "measured",
+    "endpoints": "measured"
+  }
 }
