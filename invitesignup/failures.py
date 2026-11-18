@@ -76,7 +76,7 @@ _SIGNATURES = (
     (Kind.SITE_REJECTED, (
         "user_already_exists", "already exists", "already registered",
         "invalid invite", "invite code", "not authorized", "forbidden",
-        "403", "terms", "tos",
+        "403", "terms", "tos", "already has an account", "already registered",
     )),
     (Kind.MAIL_TIMEOUT, ("no verification link", "no verification code", "no mail arrived")),
     (Kind.VERIFICATION, ("no session", "sign-in failed", "could not prove")),

@@ -741,7 +741,15 @@ class Mailbox:
         dump_path: Optional[str | Path] = None,
         proxy: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
+        operator_owned: bool = False,
     ):
+        # True when the mailbox belongs to the operator rather than to us.
+        # The distinction decides whether credentials may be written to disk:
+        # a temporary inbox is ours to reopen, an app password for someone's
+        # real inbox is not.  Keeping that rule here rather than in the caller
+        # means a future caller cannot forget it -- which is exactly how the
+        # QQ app password ended up in a plaintext file.
+        self.operator_owned = operator_owned
         self.provider = provider
         self.dump_path = Path(dump_path) if dump_path else None
         self.proxy = proxy
@@ -786,9 +794,12 @@ class Mailbox:
     def export(self) -> Dict[str, str]:
         """Everything needed to open this inbox again later.
 
-        Empty when the provider cannot be reopened.  An address with no
-        credentials is deliberately *not* returned as if it were restorable.
+        Empty when the provider cannot be reopened, or when the mailbox is
+        the operator's own.  An address with no credentials is deliberately
+        *not* returned as if it were restorable.
         """
+        if self.operator_owned:
+            return {}
         if self.provider is None or not self.address:
             return {}
         try:

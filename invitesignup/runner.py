@@ -123,22 +123,30 @@ def run_registration(
     key = ledger_mod.dedupe_key(profile.site, profile.invite_code)
     book = ledger_mod.Ledger.open(out / "ledger.jsonl")
 
-    result = _attempt(
-        profile,
-        out=out,
-        key=key,
-        book=book,
-        email=email,
-        password=password,
-        inbox_password=inbox_password,
-        allow_multi=allow_multi,
-        force=force,
-        headless=headless,
-        tos_forbids_automation=tos_forbids_automation,
-        poll_timeout=poll_timeout,
-        on_event=on_event,
-        link_prompt=link_prompt,
-    )
+    try:
+        result = _attempt(
+            profile,
+            out=out,
+            key=key,
+            book=book,
+            email=email,
+            password=password,
+            inbox_password=inbox_password,
+            allow_multi=allow_multi,
+            force=force,
+            headless=headless,
+            tos_forbids_automation=tos_forbids_automation,
+            poll_timeout=poll_timeout,
+            on_event=on_event,
+            link_prompt=link_prompt,
+        )
+    except Exception as exc:
+        # An exception used to escape before the ledger row was written, so a
+        # crashed run left no trace at all -- indistinguishable from never
+        # having tried, which is precisely what the ledger exists to prevent.
+        result = RunResult(stage="crashed", email=email or "")
+        result.errors.append(f"{type(exc).__name__}: {exc}")
+        _emit(on_event, "error", message=result.errors[-1])
     _classify_outcome(result)
     _persist(book, profile, result, key, started, round(time.time() - started, 2))
     _emit(on_event, "finished", result=result.to_dict())
@@ -157,12 +165,21 @@ def _classify_outcome(result: RunResult) -> None:
         result.failure_kind = ""
         result.failure_action = ""
         return
+    # "Already registered" is a business refusal: the account exists, so a
+    # retry cannot succeed and must not create a second one.
+    if result.stage == "already-registered":
+        result.failure_kind = "site_rejected"
+        result.failure_action = "abort"
+        if not result.notes:
+            result.notes = "the address already has an account on this site"
+        return
     text = "; ".join(result.errors) or result.stage
     # A failure after the submit step means the site may already have created
     # the account, which is exactly what flips "retry" into "abort".
     mail_requested = result.stage not in (
         "start", "landing", "email", "password", "blocked-by-verdict",
         "skipped-duplicate", "blocked-by-quota", "mailbox-failed",
+        "already-registered", "crashed",
     )
     classification = classify(text, mail_requested=mail_requested)
     result.failure_kind = classification.kind.value
@@ -232,7 +249,11 @@ def _attempt(
             # so the whole flow stays automatic: no waiting for a human to
             # paste the link.  Without the password the run still stops at
             # the verification step, which is the --wait-link path.
-            mailbox = Mailbox(dump_path=dump_path)
+            # operator_owned=True makes Mailbox.export() return nothing, so
+            # the app password for someone's real inbox cannot be persisted
+            # even by accident.  The rule lives in Mailbox because that is
+            # where export() is defined and where a future caller will look.
+            mailbox = Mailbox(dump_path=dump_path, operator_owned=True)
             try:
                 provider = ImapProvider()
                 provider.configure(email, inbox_password)
@@ -318,6 +339,25 @@ def _attempt(
             # The site may refuse the mailbox right here, before any mail is
             # sent.  Catching it now saves a two-minute wait and, more
             # importantly, says *why* instead of "no verification link".
+            # A site that already knows this address sends it to sign-in
+            # instead of showing the rest of the signup form.  Reporting the
+            # missing password field as a timeout classified the run as a
+            # retryable transport error, which would have retried forever
+            # against an account that already exists.
+            if _landed_on_sign_in(page, profile):
+                result.stage = "already-registered"
+                result.errors.append(
+                    "this address already has an account on this site; "
+                    "the invite page redirected to sign-in"
+                )
+                result.notes = (
+                    "use a different address, or sign in with this one instead "
+                    "of registering again"
+                )
+                _emit(on_event, "stage", stage=result.stage,
+                      message="this address is already registered")
+                return result
+
             page_text = _visible_error_text(page)
             if page_text and _mailbox_was_rejected(page_text):
                 result.stage = "mailbox-rejected"
@@ -696,6 +736,33 @@ def _visible_error_text(page, limit: int = 400) -> str:
         ) or ""
     except Exception:
         return ""
+
+
+def _landed_on_sign_in(page, profile: SiteProfile) -> bool:
+    """True when the invite page sent us to a sign-in page.
+
+    That is the site's way of saying "this address already exists".  Detecting
+    it matters because the alternative is a timeout on a password field that
+    will never appear, which reads as a network problem and invites a retry.
+    """
+    try:
+        url = (page.url or "").lower()
+    except Exception:
+        return False
+    sign_in = (profile.sign_in_endpoint or "").lower()
+    if sign_in and sign_in in url:
+        return True
+    if any(token in url for token in ("/sign-in", "/signin", "/login")):
+        return True
+    # Some sites keep the invite URL and swap the form instead.
+    try:
+        if page.locator('input[type="password"]').count() and not page.locator(
+            profile.selectors.get("password", "#invite-password")
+        ).count():
+            return "sign in" in (page.locator("body").inner_text() or "").lower()
+    except Exception:
+        pass
+    return False
 
 
 def _mailbox_was_rejected(text: str) -> bool:

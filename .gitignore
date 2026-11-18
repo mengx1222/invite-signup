@@ -13,3 +13,5 @@ config.json
 profiles/*.web.json
 # same rule for the profiles the one-click flow writes automatically
 profiles/*.auto.json
+# profiles written by a live probe run carry the real invite code
+profiles/*.test.json

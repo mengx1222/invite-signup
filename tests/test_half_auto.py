@@ -392,6 +392,41 @@ def test_the_cli_switches_the_console_to_utf8():
     assert "utf-8" in calls
 
 
+def test_an_operator_owned_mailbox_never_exports_credentials():
+    """A temp inbox is ours to reopen; someone's real inbox is not.
+
+    This was a real defect: a run with --email/--inbox-password wrote the QQ
+    app password into output/accounts.jsonl in clear.  The rule now lives in
+    Mailbox.export(), so a caller cannot forget it -- and this test targets
+    that method directly rather than a code path that might not run.
+    """
+    Fake = _fake_provider("ownable")
+    PROVIDERS["ownable"] = Fake
+    try:
+        ours = Mailbox()
+        ours.create(order=["ownable"])
+        assert ours.export().get("password"), "our own inbox should be restorable"
+
+        theirs = Mailbox(operator_owned=True)
+        theirs.create(order=["ownable"])
+        assert theirs.export() == {}, "an operator inbox must not be exported"
+    finally:
+        PROVIDERS.pop("ownable", None)
+
+
+def test_the_runner_marks_an_operator_inbox_as_theirs():
+    """The flag is worthless if the caller forgets to pass it."""
+    import inspect
+
+    from invitesignup import runner
+
+    source = inspect.getsource(runner._attempt)
+    marker = "if inbox_password:"
+    assert marker in source
+    branch = source.split(marker, 1)[1]
+    assert "operator_owned=True" in branch
+
+
 def test_create_preferring_puts_the_preferred_provider_first():
     seen = []
 
@@ -419,3 +454,73 @@ def test_create_preferring_puts_the_preferred_provider_first():
     finally:
         for name in ("pref-a", "pref-b"):
             PROVIDERS.pop(name, None)
+
+
+def test_a_crash_still_writes_a_ledger_row(monkeypatch, tmp_path):
+    """An exception used to escape before the row was written.
+
+    The ledger exists so "we never tried" and "we tried and it broke" are
+    distinguishable; a crashed run that leaves no row defeats exactly that.
+    """
+    import json
+
+    from invitesignup import runner
+    from invitesignup.profile import SiteProfile
+
+    def boom(*a, **k):
+        raise RuntimeError("exploded before any stage ran")
+
+    monkeypatch.setattr(runner, "_attempt", boom)
+
+    profile = SiteProfile(site="example.test", base_url="https://example.test",
+                          invite_code="C", invite_valid=True, captcha="none")
+    result = runner.run_registration(
+        profile, output_dir=str(tmp_path), force=True,
+    )
+
+    assert result.stage == "crashed"
+    assert any("exploded" in e for e in result.errors)
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows, "a crashed run left no trace at all"
+    assert rows[-1]["stage"] == "crashed"
+
+
+def test_a_sign_in_redirect_is_read_as_already_registered():
+    """The site says "this address exists" by redirecting to sign-in.
+
+    Missing that produced a timeout on a password field that will never
+    appear, which the failure table then called a retryable transport error --
+    so a batch would retry forever against an account that already exists.
+    """
+    from invitesignup.runner import _landed_on_sign_in
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        def locator(self, sel):
+            class L:
+                def count(self):
+                    return 0
+            return L()
+
+    profile = type("P", (), {"sign_in_endpoint": "", "selectors": {}})()
+
+    assert _landed_on_sign_in(Page("https://yila.ai/sign-in?email=x"), profile)
+    assert _landed_on_sign_in(Page("https://site.test/login"), profile)
+    assert not _landed_on_sign_in(Page("https://site.test/invite/CODE"), profile)
+
+
+def test_already_registered_aborts_the_batch_instead_of_retrying():
+    from invitesignup.runner import RunResult, _classify_outcome
+
+    # The error text deliberately avoids every signature word, so this can
+    # only pass via the stage check and not via text matching.
+    result = RunResult(stage="already-registered", errors=["redirected"])
+    _classify_outcome(result)
+    assert result.failure_kind == "site_rejected"
+    assert result.failure_action == "abort"
