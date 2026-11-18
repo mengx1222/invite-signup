@@ -29,6 +29,27 @@ from .verdict import decide
 from .verify import verify_account
 
 
+def _use_utf8_console() -> None:
+    """Make Chinese mail subjects readable on a Windows console.
+
+    cmd.exe and PowerShell default to the legacy GBK code page here, so a
+    perfectly decoded subject like "您的 Google 账号已成功恢复" prints as
+    replacement characters.  That looks exactly like a decoding bug in the
+    mailbox layer, which is where time then gets wasted.  The data was never
+    wrong -- only the terminal was.
+    """
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 def _record_declined(output_dir: str, profile: SiteProfile, verdict) -> None:
     """Record a run the CLI refused to start.
 
@@ -369,6 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    _use_utf8_console()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

@@ -367,6 +367,31 @@ def test_an_imap_inbox_can_be_polled_for_a_link(monkeypatch):
     assert "token=abc123" in polled.payload
 
 
+def test_the_cli_switches_the_console_to_utf8():
+    """Windows defaults to GBK here, so a correctly decoded Chinese subject
+    prints as replacement characters -- which looks like a decoding bug in the
+    mailbox layer and sends the investigation to the wrong place.
+    """
+    from invitesignup import cli
+
+    calls = []
+    import sys as _sys
+
+    class FakeOut:
+        encoding = "gbk"
+
+        def reconfigure(self, **kw):
+            calls.append(kw.get("encoding"))
+
+    original = _sys.stdout
+    _sys.stdout = FakeOut()
+    try:
+        cli._use_utf8_console()
+    finally:
+        _sys.stdout = original
+    assert "utf-8" in calls
+
+
 def test_create_preferring_puts_the_preferred_provider_first():
     seen = []
 
