@@ -127,16 +127,13 @@ def _safe_profile_name(name: str) -> str:
 
 
 def _kind_for_verdict(verdict) -> str:
-    """Map a verdict blocker onto a failure kind, so both share one code table."""
-    blockers = getattr(verdict, "blockers", []) or []
-    joined = " ".join(blockers).lower()
-    if "captcha" in joined:
-        return "captcha"
-    if "tos" in joined:
-        return "site_rejected"
-    if "quota" in joined:
-        return "site_rejected"
-    return "config"
+    """Map a verdict blocker onto a failure kind, so both share one code table.
+
+    The mapping itself lives on Verdict: keeping a copy here let it drift, so
+    the web UI reported a wallet site as a config error while the CLI flow
+    reported it correctly.
+    """
+    return verdict.failure_kind()
 
 
 def _web_link_prompt(job: "Job"):

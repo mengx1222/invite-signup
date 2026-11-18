@@ -27,6 +27,7 @@ class Kind(str, Enum):
     MAILBOX_REJECTED = "mailbox_rejected"  # the site refused the mailbox address
     SITE_REJECTED = "site_rejected"  # the site said no: exists, invalid invite, tos
     CAPTCHA = "captcha"            # a challenge appeared
+    WALLET = "wallet"              # signup is a wallet signature / OAuth only
     VERIFICATION = "verification"  # account exists but could not be proven
     CONFIG = "config"              # profile is wrong or incomplete
     UNKNOWN = "unknown"
@@ -63,6 +64,8 @@ class Classification:
 # so the more specific patterns come first.
 _SIGNATURES = (
     (Kind.CAPTCHA, ("captcha", "turnstile", "hcaptcha", "recaptcha", "challenge is mounted")),
+    (Kind.WALLET, ("wallet signature", "solana", "siwe", "no signup form",
+                   "no email or password field")),
     (Kind.RATE_LIMIT, ("429", "too many requests", "rate limit")),
     (Kind.MAILBOX_REJECTED, (
         "disposable", "temporary email", "temp mail", "throwaway",
@@ -115,6 +118,12 @@ def classify(error: str, *, mail_requested: bool = False) -> Classification:
             return Classification(kind, Action.RETRY, "transport failure before commit")
         if kind is Kind.CAPTCHA:
             return Classification(kind, Action.STOP, "a challenge is present; not attempted")
+        if kind is Kind.WALLET:
+            # Nothing a form filler can do: the site wants a signature.
+            return Classification(
+                kind, Action.NEEDS_HUMAN,
+                "this site signs up with a wallet or an OAuth account, not a form",
+            )
         if kind is Kind.MAILBOX_REJECTED:
             # Recoverable, but not by retrying: the same address will be
             # refused again.  This is the one failure where the fix is a

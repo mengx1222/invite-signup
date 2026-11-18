@@ -12,6 +12,9 @@ needs-human-in-loop  the flow works but one step needs a human (e.g. a real inbo
 blocked-by-captcha    a captcha is present; we do not attempt to defeat one
 blocked-by-tos       the site's terms forbid automation; we do not proceed
 blocked-missing-facts the probe could not determine something we need
+blocked-wallet-signup the site does not sign up through a form at all
+                      (wallet signature or OAuth-only), so there is nothing
+                      for a form filler to fill
 """
 
 from __future__ import annotations
@@ -54,6 +57,23 @@ class Verdict:
         if self.reasons:
             return head + " " + "; ".join(self.reasons)
         return head
+
+    def failure_kind(self) -> str:
+        """The failure kind this verdict maps onto, for the stable code table.
+
+        This lives on the verdict rather than in each caller because two
+        callers had already drifted apart: the CLI flow knew about wallet
+        sites and the web UI did not, so the same verdict produced two
+        different codes depending on how it was reached.
+        """
+        joined = " ".join(self.blockers or []).lower()
+        if "captcha" in joined:
+            return "captcha"
+        if "wallet" in joined or "no_signup_form" in joined:
+            return "wallet"
+        if "tos" in joined or "quota" in joined:
+            return "site_rejected"
+        return "config"
 
 
 def _captcha_blocks(captcha: str) -> bool:

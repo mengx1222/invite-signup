@@ -261,16 +261,8 @@ def _balance(state: Dict[str, Any]) -> Any:
 
 
 def _kind_for(verdict) -> str:
-    joined = " ".join(getattr(verdict, "blockers", []) or []).lower()
-    if "captcha" in joined:
-        return "captcha"
-    if "no_signup_form" in joined or "wallet" in joined:
-        return "config"
-    if "tos" in joined:
-        return "site_rejected"
-    if "invite" in joined:
-        return "config"
-    return "config"
+    """Kept as a module-level name for callers, but the rule lives on Verdict."""
+    return verdict.failure_kind()
 
 
 def _plain_reason(verdict) -> str:

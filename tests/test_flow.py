@@ -93,6 +93,25 @@ def test_mail_timeout_is_distinguished_from_rejection():
     assert "一次性邮箱" not in text
 
 
+def test_a_wallet_site_is_not_reported_as_a_config_error():
+    """It used to be, and only in the web UI.
+
+    flow.py knew about wallet sites and web.py had its own copy of the
+    blocker-to-kind mapping that did not, so the same verdict produced E400
+    (fix your profile) on one path and the right answer on the other.  The
+    mapping now lives on Verdict; this test pins the answer for both callers.
+    """
+    from invitesignup import progress, web
+    from invitesignup.verdict import BLOCKED_WALLET
+
+    v = _verdict(BLOCKED_WALLET, ["no_signup_form"],
+                 ["this page has no email or password field"], allowed=False)
+    assert v.failure_kind() == "wallet"
+    assert flow._kind_for(v) == "wallet"
+    assert web._kind_for_verdict(v) == "wallet"
+    assert progress.failure_code("wallet") != progress.failure_code("config")
+
+
 def test_balance_is_found_under_several_key_names():
     for payload in (
         {"data": {"balance": 500}},
