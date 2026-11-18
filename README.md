@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-186%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-188%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -178,7 +178,7 @@ invite-signup/
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记
 ├── examples/          可直接运行的示例
-└── tests/             186 个离线测试
+└── tests/             188 个离线测试
 ```
 
 ---
@@ -201,7 +201,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 186 passed
+python -m pytest tests/ -q          # 188 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 
