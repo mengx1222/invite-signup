@@ -194,6 +194,74 @@ def test_ordinary_profile_names_are_kept():
     assert _safe_profile_name("") == ""
 
 
+def test_a_failed_flow_carries_a_code_and_a_hint():
+    """The diagnosis block the user copies must not be missing its code.
+
+    run_flow reports failure in its return value rather than by raising, so
+    the web layer has to look at the result.  It did not, and the block the
+    user pasted back read "错误类型:" with nothing after it and no suggested
+    next step -- exactly the two things the block exists for.
+    """
+    from invitesignup import web as web_mod
+
+    fake = {
+        "ok": False, "stage": "understand", "email": "", "password": "",
+        "credits": None, "failure_kind": "wallet",
+        "reason": "no form on this page",
+        "verdict": {"state": "blocked-wallet-signup", "blockers": ["no_signup_form"]},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = create_app(output_dir=tmp)
+        original = web_mod.run_flow
+        web_mod.run_flow = lambda *a, **k: dict(fake)
+        try:
+            resp = app.test_client().post("/api/flow", json={"invite_url": "https://x.test/r/A"})
+            job_id = resp.get_json()["job_id"]
+            client = app.test_client()
+            deadline = time.time() + 5
+            payload = {}
+            while time.time() < deadline:
+                payload = client.get(f"/api/jobs/{job_id}").get_json()
+                if payload["status"] != "running":
+                    break
+                time.sleep(0.05)
+        finally:
+            web_mod.run_flow = original
+
+    assert payload["status"] == "done"
+    assert payload["failure_code"] == "E303"
+    assert payload["failure_hint"], "a failure without a hint is just a number"
+
+
+def test_a_skipped_duplicate_is_not_dressed_up_as_a_failure():
+    from invitesignup import web as web_mod
+
+    fake = {"ok": False, "skipped": True, "stage": "skipped-duplicate",
+            "failure_kind": "", "reason": "already done today"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = create_app(output_dir=tmp)
+        original = web_mod.run_flow
+        web_mod.run_flow = lambda *a, **k: dict(fake)
+        try:
+            resp = app.test_client().post("/api/flow", json={"invite_url": "https://x.test/r/A"})
+            job_id = resp.get_json()["job_id"]
+            client = app.test_client()
+            deadline = time.time() + 5
+            payload = {}
+            while time.time() < deadline:
+                payload = client.get(f"/api/jobs/{job_id}").get_json()
+                if payload["status"] != "running":
+                    break
+                time.sleep(0.05)
+        finally:
+            web_mod.run_flow = original
+
+    assert payload["failure_code"] == ""
+    assert payload["failure_hint"] == ""
+
+
 def test_dot_only_names_are_rejected_or_emptied():
     from invitesignup.web import _safe_profile_name
 

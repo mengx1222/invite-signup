@@ -320,7 +320,7 @@ def create_app(output_dir: str = "./output"):
             }), 400
 
         def target(job: Job) -> Dict[str, Any]:
-            return run_flow(
+            result = run_flow(
                 url,
                 output_dir=out,
                 headless=not body.get("headed", False),
@@ -328,6 +328,14 @@ def create_app(output_dir: str = "./output"):
                 link_prompt=_web_link_prompt(job) if body.get("wait_link") else None,
                 on_event=lambda kind, payload: job.add(kind, payload),
             )
+            # run_flow reports failures in its return value rather than by
+            # raising, so nothing set the code or the hint on this path: the
+            # diagnosis block the user copies came out with an empty
+            # "错误类型" and no suggested next step.  A skipped duplicate is
+            # not a failure and must not get one.
+            if not result.get("ok") and not result.get("skipped"):
+                job.fail(result.get("failure_kind") or "unknown")
+            return result
 
         try:
             job = store.start("flow", target)
@@ -868,7 +876,7 @@ function buildDiagnosis(r, j) {
     `时间: ${new Date().toISOString()}`,
     `链接: ${$("url").value}`,
     `阶段: ${r.stage || ""}`,
-    `错误类型: ${r.failure_kind || j.failure_code || ""}`,
+    `错误类型: ${[r.failure_kind, j.failure_code].filter(Boolean).join(" / ")}`,
     `原因: ${r.reason || j.error || ""}`,
   ];
   if (r.verdict) lines.push(`判定: ${JSON.stringify(r.verdict)}`);
