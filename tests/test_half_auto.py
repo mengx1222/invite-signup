@@ -211,6 +211,162 @@ def test_a_profile_can_record_which_provider_this_site_accepts():
     assert SiteProfile.from_dict(old).mailbox_prefer == []
 
 
+def test_imap_host_is_chosen_from_the_address_domain():
+    from invitesignup.mailbox import ImapProvider
+
+    p = ImapProvider()
+    p.configure("someone@qq.com", "pw")
+    assert (p.host, p.port) == ("imap.qq.com", 993)
+
+    p2 = ImapProvider()
+    p2.configure("someone@gmail.com", "pw")
+    assert p2.host == "imap.gmail.com"
+
+
+def test_an_unknown_imap_domain_is_refused_rather_than_guessed():
+    from invitesignup.mailbox import ImapProvider, MailboxError
+
+    try:
+        ImapProvider().configure("someone@unknown-provider.test", "pw")
+    except MailboxError as exc:
+        assert "no IMAP host known" in str(exc)
+    else:
+        raise AssertionError("an unknown domain was silently accepted")
+
+
+def test_an_explicit_imap_host_wins_over_the_preset_table():
+    from invitesignup.mailbox import ImapProvider
+
+    p = ImapProvider()
+    p.configure("someone@qq.com", "pw", host="mail.example.test", port=143)
+    assert (p.host, p.port) == ("mail.example.test", 143)
+
+
+def test_gbk_encoded_mail_is_decoded_not_mangled():
+    """QQ Mail sends GBK.  Decoding as UTF-8 gives mojibake, and a mangled
+    body still contains a link-shaped string, so the damage shows up later as
+    "no verification link arrived" rather than as an encoding error.
+    """
+    from invitesignup.mailbox import ImapProvider
+
+    original = "验证码是 123456，请点击 https://example.test/verify?token=abc"
+    raw = original.encode("gbk")
+    assert ImapProvider._decode_bytes(raw, "gbk") == original
+    # Even when the declared charset is wrong, the CJK fallback must catch it.
+    assert ImapProvider._decode_bytes(raw, "utf-8") == original
+
+
+def test_undecodable_bytes_do_not_raise():
+    from invitesignup.mailbox import ImapProvider
+
+    text = ImapProvider._decode_bytes(b"\xff\xfe\x00\x01")
+    assert isinstance(text, str)
+
+
+def test_imap_credentials_round_trip():
+    from invitesignup.mailbox import ImapProvider
+
+    p = ImapProvider()
+    p.configure("someone@qq.com", "app-password")
+    saved = p.credentials()
+    assert saved["password"] == "app-password"
+    assert saved["host"] == "imap.qq.com"
+    assert saved["port"] == "993"
+
+
+def test_imap_reopen_needs_both_address_and_password():
+    from invitesignup.mailbox import ImapProvider, MailboxError
+
+    for creds in ({"address": "a@qq.com"}, {"password": "x"}):
+        try:
+            ImapProvider().reopen(creds)
+        except MailboxError:
+            pass
+        else:
+            raise AssertionError(f"{creds} was accepted")
+
+
+def test_imap_refuses_to_pretend_a_proxy_works():
+    from invitesignup.mailbox import ImapProvider, MailboxError
+
+    p = ImapProvider(proxy="http://127.0.0.1:7890")
+    p.configure("someone@qq.com", "pw")
+    try:
+        p._connect()
+    except MailboxError as exc:
+        assert "proxy" in str(exc).lower()
+    else:
+        raise AssertionError("a proxy was silently ignored")
+
+
+def test_a_mime_body_yields_its_text_and_links():
+    from email.message import EmailMessage
+
+    from invitesignup.mailbox import _imap_body_text, extract_links
+
+    msg = EmailMessage()
+    msg["Subject"] = "Verify"
+    msg.set_content("Please confirm: https://example.test/verify?token=abc")
+    text = _imap_body_text(msg)
+    assert "https://example.test/verify?token=abc" in extract_links(text)
+
+
+def test_an_imap_inbox_can_be_polled_for_a_link(monkeypatch):
+    """The end the IMAP provider exists for: read a verification link from a
+    mailbox the operator owns, with no human in the loop.
+
+    imaplib is stubbed, so this exercises the real fetch/decode/extract path
+    without a network or an account.
+    """
+    from invitesignup.mailbox import ImapProvider, Mailbox
+
+    link = "https://example.test/verify?token=abc123"
+    raw = (
+        b"Subject: Verify your email\r\n"
+        b"Date: Mon, 18 Nov 2026 10:00:00 +0800\r\n"
+        b"Content-Type: text/plain; charset=gbk\r\n\r\n"
+        + ("请点击验证: " + link).encode("gbk")
+    )
+
+    class FakeConn:
+        def login(self, address, password):
+            assert password == "app-pw"
+            return ("OK", [b""])
+
+        def select(self, folder):
+            return ("OK", [b"1"])
+
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                return ("OK", [b"7"])
+            if command == "FETCH":
+                if "HEADER.FIELDS" in str(args[-1]):
+                    header = (
+                        b"Subject: Verify your email\r\n"
+                        b"Date: Mon, 18 Nov 2026 10:00:00 +0800\r\n\r\n"
+                    )
+                    return ("OK", [(b"1", header)])
+                return ("OK", [(b"1", raw)])
+            return ("OK", [b""])
+
+        def close(self):
+            return ("OK", [])
+
+        def logout(self):
+            return ("BYE", [])
+
+    monkeypatch.setattr("imaplib.IMAP4_SSL", lambda *a, **k: FakeConn())
+
+    provider = ImapProvider()
+    provider.configure("me@qq.com", "app-pw")
+    box = Mailbox(provider=provider)
+    box.address = provider.create()
+
+    polled = box.poll(mode="link", timeout_secs=5, not_before=0, before_ids=set())
+    assert polled.found, polled.errors
+    assert "token=abc123" in polled.payload
+
+
 def test_create_preferring_puts_the_preferred_provider_first():
     seen = []
 

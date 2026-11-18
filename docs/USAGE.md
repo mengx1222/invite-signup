@@ -116,6 +116,31 @@ python -m invitesignup ledger
 
 `declined` 单独列出来，是为了让"没试过"和"试了被闸门挡住"能区分开。
 
+### 用自己的邮箱收验证信（不用人工贴链接）
+
+临时邮箱被站点拉黑时，用自己的邮箱，并且把 IMAP 授权码一起给它，整条链路仍然是自动的：
+
+```powershell
+# 先证明这个邮箱真能读（不建号、不发信）
+python -m invitesignup inbox-check --email 你的@qq.com --password 授权码
+
+# 能读就带上它跑，验证信自动取
+python -m invitesignup run --profile p.json --email 你的@qq.com --inbox-password 授权码
+```
+
+**这里要填的是「授权码」，不是邮箱登录密码。** 各家都要求单独开：
+
+| 邮箱 | 怎么拿 |
+| :--- | :--- |
+| QQ / Foxmail | 设置 → 账户 → POP3/IMAP 服务 → 开启后生成授权码 |
+| 163 / 126 | 设置 → POP3/SMTP/IMAP → 开启 → 新增授权码 |
+| Gmail | 开启两步验证后生成 App Password（需先开 IMAP） |
+
+只给 `--email` 不给 `--inbox-password`，就还是原来那条半自动路：发信后停下来等你贴链接。
+两个都给，工具会自己轮询收件箱。
+
+> IMAP 走不了 HTTP 代理。挂了代理时会明确报错，而不是静默失败。
+
 ### 临时收件箱以后还能打开
 
 建号用的临时邮箱，凭据也一起存在 `accounts.jsonl` 的 `inbox` 字段里。

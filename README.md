@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-177%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-186%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -146,6 +146,8 @@ python -m invitesignup verify --profile profiles/example.json \
 
 - **不使用真实邮箱服务商的域名拼造不存在的地址。** 一次性邮箱只来自公开临时邮箱服务；
   这条是 `RegisterHub` 上游 `sites/milionseek.py` 的做法，本项目**不继承**。
+- **可以用自己的邮箱收信，且不用人工介入。** `--email` + `--inbox-password`（IMAP 授权码）
+  让工具自己轮询收件箱取验证链接；先跑 `inbox-check` 验证凭据，别等建号时才发现读不了。
 - **临时收件箱要能重开。** 建号用的邮箱凭据随账号一起存在 `accounts.jsonl` 的
   `inbox` 字段，`python -m invitesignup inbox --email <地址>` 可以重新打开，
   这样站点以后发密码重置还读得到。只存地址不存密码等于没存。
@@ -176,7 +178,7 @@ invite-signup/
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记
 ├── examples/          可直接运行的示例
-└── tests/             177 个离线测试
+└── tests/             186 个离线测试
 ```
 
 ---
@@ -199,7 +201,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 177 passed
+python -m pytest tests/ -q          # 186 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 

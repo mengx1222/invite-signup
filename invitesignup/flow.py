@@ -94,6 +94,8 @@ def run_flow(
     profile_dir: str | Path = "profiles",
     headless: bool = True,
     poll_timeout: int = 120,
+    email: Optional[str] = None,
+    inbox_password: Optional[str] = None,
     on_event: Optional[EventFn] = None,
     link_prompt: Optional[Callable[[], Optional[str]]] = None,
 ) -> Dict[str, Any]:
@@ -167,6 +169,8 @@ def run_flow(
         result = run_registration(
             profile,
             output_dir=out,
+            email=email,
+            inbox_password=inbox_password,
             headless=headless,
             poll_timeout=poll_timeout,
             on_event=run_sink,

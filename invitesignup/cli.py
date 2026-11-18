@@ -5,6 +5,7 @@
     python -m invitesignup verify --profile profile.json --email ... --password ...
     python -m invitesignup ledger [--file output/ledger.jsonl]
     python -m invitesignup inbox  --email <address> [--file output/accounts.jsonl]
+    python -m invitesignup inbox-check --email ... --password <app password>
 
 ``probe`` is read-only apart from a single existence check (see
 ``--no-advance``).  ``run`` creates one account.  ``verify`` proves an
@@ -119,6 +120,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         email=args.email,
         password=args.password,
+        inbox_password=args.inbox_password,
         allow_multi=args.allow_multi,
         force=args.force,
         headless=not args.headed,
@@ -167,6 +169,42 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     print(report.summary())
     return 0 if report.verified else 1
+
+
+def cmd_inbox_check(args: argparse.Namespace) -> int:
+    """Prove an IMAP inbox works before a run depends on it.
+
+    Connecting is the only honest test: an address that resolves but cannot
+    authenticate looks identical to a working one until the first real run.
+    """
+    from .mailbox import ImapProvider, MailboxError
+
+    provider = ImapProvider()
+    try:
+        provider.configure(
+            args.email, args.password,
+            host=args.host or "", port=int(args.port or 0),
+            folder=args.folder or "",
+        )
+        provider.create()
+    except MailboxError as exc:
+        print(f"[-] {exc}")
+        return 1
+    except Exception as exc:
+        print(f"[-] {type(exc).__name__}: {exc}")
+        return 1
+
+    print(f"[ok] connected to {provider.host}:{provider.port} as {provider.address}")
+    try:
+        messages = provider.messages(limit=args.limit)
+    except Exception as exc:
+        print(f"[!] connected but listing failed: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"[ok] {len(messages)} message(s) visible in {provider.folder}")
+    for m in messages[-5:]:
+        print(f"     {m.subject or '(no subject)'}   uid={m.id}")
+    provider.close()
+    return 0
 
 
 def cmd_inbox(args: argparse.Namespace) -> int:
@@ -276,6 +314,9 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="create one account using an invite code")
     r.add_argument("--profile", required=True)
     r.add_argument("--email", help="use this mailbox instead of a temporary one")
+    r.add_argument("--inbox-password",
+                   help="app password for --email, so verification is read over IMAP "
+                        "instead of waiting for a pasted link")
     r.add_argument("--password")
     r.add_argument("--output-dir", default="./output")
     r.add_argument("--allow-multi", action="store_true",
@@ -295,6 +336,17 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--email", required=True)
     v.add_argument("--password", required=True)
     v.set_defaults(func=cmd_verify)
+
+    c = sub.add_parser("inbox-check",
+                       help="prove an IMAP inbox works before relying on it")
+    c.add_argument("--email", required=True)
+    c.add_argument("--password", required=True,
+                   help="app-specific password, not the account password")
+    c.add_argument("--host", help="override the preset IMAP host")
+    c.add_argument("--port", type=int, default=0)
+    c.add_argument("--folder", default="")
+    c.add_argument("--limit", type=int, default=10)
+    c.set_defaults(func=cmd_inbox_check)
 
     i = sub.add_parser("inbox", help="reopen a temporary inbox used for signup")
     i.add_argument("--email", required=True, help="the address the account was created with")

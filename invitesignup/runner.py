@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import ledger as ledger_mod
 from .failures import Action, classify
 from .human import click_first_enabled_non_google, human_click, human_type, launch_browser
-from .mailbox import Mailbox
+from .mailbox import ImapProvider, Mailbox
 from .profile import SiteProfile
 from .verdict import decide
 
@@ -102,6 +102,7 @@ def run_registration(
     output_dir: str | Path = "./output",
     email: Optional[str] = None,
     password: Optional[str] = None,
+    inbox_password: Optional[str] = None,
     allow_multi: bool = False,
     force: bool = False,
     headless: bool = True,
@@ -129,6 +130,7 @@ def run_registration(
         book=book,
         email=email,
         password=password,
+        inbox_password=inbox_password,
         allow_multi=allow_multi,
         force=force,
         headless=headless,
@@ -177,6 +179,7 @@ def _attempt(
     book,
     email: Optional[str],
     password: Optional[str],
+    inbox_password: Optional[str],
     allow_multi: bool,
     force: bool,
     headless: bool,
@@ -224,6 +227,27 @@ def _attempt(
     dump_path = out / f"mail_dump_{profile.site}.txt"
     if email:
         result.email = email
+        if inbox_password:
+            # The operator supplied their own inbox *and* its app password,
+            # so the whole flow stays automatic: no waiting for a human to
+            # paste the link.  Without the password the run still stops at
+            # the verification step, which is the --wait-link path.
+            mailbox = Mailbox(dump_path=dump_path)
+            try:
+                provider = ImapProvider()
+                provider.configure(email, inbox_password)
+                mailbox.provider = provider
+                mailbox.address = provider.create()
+                result.inbox = mailbox.export()
+                mail_baseline = mailbox.current_ids()
+            except Exception as exc:
+                result.stage = "mailbox-failed"
+                result.errors.append(
+                    f"could not open your inbox: {type(exc).__name__}: {exc}"
+                )
+                _emit(on_event, "stage", stage=result.stage,
+                      message="could not open your inbox")
+                return result
     else:
         mailbox = Mailbox(dump_path=dump_path)
         try:

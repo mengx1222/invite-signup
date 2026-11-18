@@ -325,6 +325,8 @@ def create_app(output_dir: str = "./output"):
                 output_dir=out,
                 headless=not body.get("headed", False),
                 poll_timeout=int(body.get("poll_timeout") or 120),
+                email=(body.get("email") or "").strip() or None,
+                inbox_password=(body.get("inbox_password") or "").strip() or None,
                 link_prompt=_web_link_prompt(job) if body.get("wait_link") else None,
                 on_event=lambda kind, payload: job.add(kind, payload),
             )

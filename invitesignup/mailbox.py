@@ -21,13 +21,17 @@ way on a live site:
 
 from __future__ import annotations
 
+import imaplib
 import json
 import random
 import re
+import socket
 import string
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email import message_from_bytes
+from email.header import decode_header, make_header
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -420,6 +424,258 @@ class TempMailIoProvider(Provider):
         return ""
 
 
+class ImapProvider(Provider):
+    """A real mailbox you own, read over IMAP.
+
+    This is the answer to "temporary inboxes keep getting refused": a site
+    blocks a *domain*, so the durable fix is a domain or inbox you control,
+    not more addresses on a blocklisted one.
+
+    It does not create anything.  ``create`` only checks that the credentials
+    work and returns the address, because a mailbox you own already exists --
+    pretending to create it would be the kind of fake capability this project
+    keeps having to remove.
+
+    Two details that matter in practice:
+
+    * QQ Mail (and several Chinese providers) send GBK-encoded headers and
+      bodies.  Decoding with UTF-8 alone yields mojibake, and a verification
+      link inside a mangled body still *looks* present, so the failure shows
+      up later as "no link arrived".  ``_decode_bytes`` tries the declared
+      charset, then GBK, then falls back with replacement.
+    * Search by UID and only fetch headers first; a full-body fetch of a
+      mailbox with thousands of messages is slow enough to look hung.
+    """
+
+    name = "imap"
+
+    # host -> (imap host, port); the address's domain picks the entry.
+    PRESETS = {
+        "qq.com": ("imap.qq.com", 993),
+        "foxmail.com": ("imap.qq.com", 993),
+        "163.com": ("imap.163.com", 993),
+        "126.com": ("imap.126.com", 993),
+        "gmail.com": ("imap.gmail.com", 993),
+        "outlook.com": ("outlook.office365.com", 993),
+        "hotmail.com": ("outlook.office365.com", 993),
+    }
+
+    def __init__(self, proxy: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT):
+        # IMAP over a proxy would need a tunnel; rather than silently ignoring
+        # the setting, say so when someone tries.
+        self.timeout = timeout
+        self.proxy = proxy
+        self.host = ""
+        self.port = 993
+        self.address = ""
+        self.password = ""
+        self.folder = "INBOX"
+        self._conn: Optional[imaplib.IMAP4_SSL] = None
+
+    # ---------------- connection ----------------
+
+    def _connect(self) -> imaplib.IMAP4_SSL:
+        if self._conn is not None:
+            return self._conn
+        if not self.host:
+            raise MailboxError("imap provider has no host; call configure() first")
+        if self.proxy:
+            raise MailboxError(
+                "IMAP cannot use an HTTP proxy directly; "
+                "unset the proxy for this provider or run without one"
+            )
+        try:
+            conn = imaplib.IMAP4_SSL(self.host, self.port, timeout=self.timeout)
+        except (OSError, socket.error) as exc:
+            raise MailboxError(f"cannot reach {self.host}:{self.port}: {exc}")
+        try:
+            conn.login(self.address, self.password)
+        except imaplib.IMAP4.error as exc:
+            # The usual cause is using the account password instead of the
+            # app-specific one, so say that rather than echoing "AUTH failed".
+            raise MailboxError(
+                f"IMAP login failed for {self.address}: {exc}. "
+                "Most providers need an app-specific password here, not the "
+                "account password."
+            )
+        conn.select(self.folder)
+        self._conn = conn
+        return conn
+
+    def configure(self, address: str, password: str,
+                  host: str = "", port: int = 0, folder: str = "") -> None:
+        self.address = address
+        self.password = password
+        if folder:
+            self.folder = folder
+        if host:
+            self.host, self.port = host, port or 993
+            return
+        domain = address.rsplit("@", 1)[-1].lower()
+        preset = self.PRESETS.get(domain)
+        if not preset:
+            raise MailboxError(
+                f"no IMAP host known for {domain!r}; pass host= and port= explicitly"
+            )
+        self.host, self.port = preset
+
+    def create(self) -> str:
+        """Verify the credentials work and return the address.
+
+        Nothing is created: this mailbox already belongs to the operator.
+        """
+        self._connect()
+        return self.address
+
+    def credentials(self) -> Dict[str, str]:
+        if not (self.address and self.password):
+            return {}
+        return {
+            "password": self.password,
+            "host": self.host,
+            "port": str(self.port),
+            "folder": self.folder,
+        }
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        self.address = credentials.get("address", "")
+        self.password = credentials.get("password", "")
+        if not (self.address and self.password):
+            raise MailboxError("imap needs both an address and a password")
+        self.host = credentials.get("host", "") or self.host
+        self.port = int(credentials.get("port") or self.port or 993)
+        self.folder = credentials.get("folder", "") or self.folder
+        if not self.host:
+            domain = self.address.rsplit("@", 1)[-1].lower()
+            preset = self.PRESETS.get(domain)
+            if not preset:
+                raise MailboxError(f"no IMAP host known for {domain!r}")
+            self.host, self.port = preset
+        self._connect()
+        return self.address
+
+    def close(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        try:
+            self._conn.logout()
+        except Exception:
+            pass
+        self._conn = None
+
+    # ---------------- reading ----------------
+
+    @staticmethod
+    def _decode_bytes(raw: bytes, declared: str = "") -> str:
+        """Decode header/body bytes, tolerating GBK and other CJK charsets."""
+        charsets = []
+        if declared:
+            charsets.append(declared)
+        charsets += ["utf-8", "gb18030", "big5"]
+        for charset in charsets:
+            try:
+                return raw.decode(charset)
+            except (UnicodeDecodeError, LookupError):
+                continue
+        return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _decode_header(value: str) -> str:
+        if not value:
+            return ""
+        try:
+            return str(make_header(decode_header(value)))
+        except Exception:
+            return value
+
+    def _uid_list(self, limit: int) -> List[str]:
+        conn = self._connect()
+        status, data = conn.uid("SEARCH", None, "ALL")
+        if status != "OK":
+            raise MailboxError(f"IMAP search failed: {status}")
+        uids = (data[0] or b"").split()
+        # Newest last in IMAP; take the tail so a huge mailbox stays cheap.
+        return [u.decode() for u in uids[-limit:]]
+
+    def messages(self, limit: int = 30) -> List[Message]:
+        conn = self._connect()
+        out: List[Message] = []
+        for uid in self._uid_list(limit):
+            status, data = conn.uid(
+                "FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (SUBJECT DATE FROM)])"
+            )
+            if status != "OK" or not data or not isinstance(data[0], tuple):
+                continue
+            header = message_from_bytes(data[0][1])
+            subject = self._decode_header(header.get("Subject", ""))
+            date = header.get("Date", "")
+            out.append(Message(
+                id=uid,
+                subject=subject,
+                received_at=parse_timestamp(_to_imap_time(date)),
+            ))
+        return out
+
+    def body(self, message_id: str) -> str:
+        conn = self._connect()
+        status, data = conn.uid("FETCH", str(message_id), "(RFC822)")
+        if status != "OK" or not data or not isinstance(data[0], tuple):
+            return ""
+        msg = message_from_bytes(data[0][1])
+        return _imap_body_text(msg)
+
+
+def _to_imap_time(raw: str) -> str:
+    """Convert an RFC 2822 Date header into something parse_timestamp reads."""
+    from email.utils import parsedate_to_datetime
+
+    if not raw:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return ""
+    if parsed is None:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _imap_body_text(msg) -> str:
+    """Plain-text view of a MIME message, preferring text/plain."""
+    parts: List[str] = []
+    plain: List[str] = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if ctype not in ("text/plain", "text/html"):
+                continue
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            text = ImapProvider._decode_bytes(payload, part.get_content_charset() or "")
+            if ctype == "text/plain":
+                plain.append(text)
+            else:
+                parts.append(text)
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload is not None:
+            plain.append(
+                ImapProvider._decode_bytes(payload, msg.get_content_charset() or "")
+            )
+    text = "\n".join(plain) or "\n".join(parts)
+    if "<" in text and ">" in text and not plain:
+        # Verification links survive tag-stripping; keep the href targets too.
+        text = re.sub(r"<[^>]+>", " ", text)
+    return text
+
+
 def _random_local_part(length: int = 12) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choices(alphabet, k=length))
@@ -447,6 +703,7 @@ def register_provider(name: str):
     return decorator
 
 
+register_provider("imap")(ImapProvider)
 register_provider("mail.tm")(MailTmProvider)
 register_provider("tempmail.io")(TempMailIoProvider)
 register_provider("guerrillamail")(GuerrillaMailProvider)
