@@ -445,3 +445,59 @@ run    -> 有 --yes 才继续；但 captcha 仍然拦（--yes 不能越过 block
 
 **测试**：`tests/test_cli_gate.py` 三条——无 `--yes` 退出 3、
 有 `--yes` 过闸、`--yes` 越不过 captcha。
+
+---
+
+## 23. 「扫 bundle」和「看流量」都不是对方的超集
+
+**背景**：有人建议加 `page.on("request")` 抓真实请求，"比扫 chunk 更准"。
+实测下来这个说法**只对一半**。
+
+**Yila 上的实测数据**：
+
+| 来源 | 数量 | 举例 |
+| :--- | :--- | :--- |
+| 只在 bundle 里 | 9 | `/api/payment/credit-packs`、`/api/research/runs`、`/api/tickets` |
+| 只在流量里 | 2 | `/api/auth/get-session`、`/api/security/csp-report` |
+| 两边都有 | 3 | `/api/config/public`、`/api/referral/check-email` 等 |
+
+**为什么不是超集**：
+
+- **bundle 里有、流量里没有**：那些路由只在登录后或特定操作时才调用，探站触发不到。
+- **流量里有、bundle 里没有**：路径是运行时拼的（`base + "/get-session"`），
+  任何 bundle 里都不存在这个完整字符串。
+
+**处置**：两者都采，取并集。
+
+```python
+merged = list(dict.fromkeys(bundle_paths + traffic_paths))
+```
+
+并在 `findings["endpoint_sources"]` 里记录三个数：`from_bundles`、
+`from_traffic`、`only_in_traffic` / `only_in_bundles`。
+**记录差异本身比记录结论更有用**——下次站点改版时，这三个数能立刻说明
+是哪一侧变了。
+
+> 顺带：一次浏览器同时做「推进 DOM」和「记流量」，不要开两次。
+> 探站最慢的就是启动浏览器，开两次等于把 50 秒变成 90 秒。
+
+---
+
+## 24. `confidence` 不是装饰，是给人工看的**待办清单**
+
+**问题**：profile 里所有字段长得一样，人看不出哪些是实测、哪些是猜的。
+
+**处置**：`profile.confidence` 逐项标 `measured` / `inferred`，
+`profile.needs_review()` 汇总需要人确认的地方：
+
+| 情况 | 提示 |
+| :--- | :--- |
+| 选择器脆弱（文本匹配） | `selector 'submit' is fragile (...)` |
+| 验证模式未知 | `verification mode is unknown` |
+| 没有 state 端点 | `no account-state endpoint (balance will not be reported)` |
+| 选择器是推断的 | `selectors were inferred, not confirmed against the live form` |
+
+CLI 的 `probe` 会把 `[conf]` 和 `[review]` 两段打出来。
+
+**纪律**：`inferred` 不是"待补全"，是"这里需要人看一眼"。
+把推断标成实测，比不标更糟。

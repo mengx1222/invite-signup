@@ -70,6 +70,14 @@ def cmd_probe(args: argparse.Namespace) -> int:
     if args.out:
         path = result.profile.save(args.out)
         print(f"[+] profile written to {path}")
+    inferred = [k for k, v in (result.profile.confidence or {}).items() if v != "measured"]
+    if inferred:
+        print(f"[conf  ] inferred, not measured: {', '.join(inferred)}")
+    review = result.profile.needs_review()
+    if review:
+        print("[review] confirm before trusting this profile:")
+        for item in review:
+            print(f"         - {item}")
     if result.verdict:
         print(f"[verdict] {result.verdict.summary()}")
         if result.verdict.human_step:

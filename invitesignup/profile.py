@@ -21,6 +21,11 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Bumped when a field changes meaning or disappears.  Profiles written by an
+# older version are read on a best-effort basis and say so, rather than being
+# silently misread.
+SCHEMA_VERSION = 2
+
 # --- selector stability -------------------------------------------------
 # A selector is "stable" if it survives a redesign of the surrounding chrome.
 SELECTOR_STABILITY = {
@@ -67,6 +72,7 @@ class Verification:
 class SiteProfile:
     """Everything the pipeline needs to know about one target site."""
 
+    schema_version: int = SCHEMA_VERSION
     site: str = ""
     base_url: str = ""
     invite_url: str = ""
@@ -111,6 +117,10 @@ class SiteProfile:
     notes: str = ""
     probed_at: str = ""
 
+    # Which facts were measured and which were inferred.  A profile that says
+    # "selectors: inferred" is a prompt for a human to look, not a defect.
+    confidence: Dict[str, str] = field(default_factory=dict)
+
     # ---------------- serialisation ----------------
 
     def to_dict(self) -> Dict[str, Any]:
@@ -122,15 +132,22 @@ class SiteProfile:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SiteProfile":
         data = dict(data)
+        version = data.get("schema_version", 1)
         attribution = data.pop("attribution", None) or {}
         verification = data.pop("verification", None) or {}
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         data = {k: v for k, v in data.items() if k in known}
-        return cls(
+        profile = cls(
             attribution=Attribution(**attribution),
             verification=Verification(**verification),
             **data,
         )
+        if version < SCHEMA_VERSION:
+            profile.confidence.setdefault(
+                "schema",
+                f"written by an older version (v{version}); re-probe to refresh",
+            )
+        return profile
 
     def save(self, path: str | Path) -> Path:
         p = Path(path)
@@ -164,6 +181,33 @@ class SiteProfile:
     def fragile_selectors(self) -> Dict[str, str]:
         """Selectors that would break on a copy change or a locale switch."""
         return {k: v for k, v in self.selectors.items() if self.stability_of(k) == "fragile"}
+
+    def selector_report(self) -> List[Dict[str, str]]:
+        """The selectors plus their stability, as one list.
+
+        ``selectors`` and ``selector_stability`` are separate dicts, which can
+        drift out of sync -- a selector added without its stability entry
+        silently falls back to guessing.  This view derives both from one
+        place so a caller never sees a half-populated pair.
+        """
+        return [
+            {"key": key, "selector": value, "stability": self.stability_of(key)}
+            for key, value in self.selectors.items()
+        ]
+
+    def needs_review(self) -> List[str]:
+        """Facts a human should confirm before the profile is trusted."""
+        reasons: List[str] = []
+        for item in self.selector_report():
+            if item["stability"] == "fragile":
+                reasons.append(f"selector '{item['key']}' is fragile ({item['selector']})")
+        if self.verification.mode == "unknown":
+            reasons.append("verification mode is unknown")
+        if not self.endpoints_state:
+            reasons.append("no account-state endpoint (balance will not be reported)")
+        if self.confidence.get("selectors") == "inferred":
+            reasons.append("selectors were inferred, not confirmed against the live form")
+        return reasons
 
     def missing(self) -> List[str]:
         """Required fields that are still empty."""

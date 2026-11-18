@@ -384,6 +384,40 @@ class DomInfo:
     title: str = ""
 
 
+@dataclass
+class TrafficLog:
+    """What the page actually requested, as opposed to what the bundles mention.
+
+    Bundle scanning finds endpoints that are *referenced*; request capture
+    finds endpoints that are *called*.  Neither is a superset of the other:
+    a route built at runtime (`base + "/verify-email"`) may never appear as a
+    whole string in any bundle, while a route that only loads after sign-in
+    never gets called during a probe.  Recording both and merging them is the
+    only way to see the union.
+    """
+
+    paths: List[str] = field(default_factory=list)
+    methods: Dict[str, List[str]] = field(default_factory=dict)
+
+    def add(self, method: str, url: str, base_url: str = "") -> None:
+        try:
+            parsed = urllib.parse.urlsplit(url)
+        except ValueError:
+            return
+        path = parsed.path
+        if not path.startswith("/api/"):
+            return
+        if path not in self.paths:
+            self.paths.append(path)
+        verbs = self.methods.setdefault(path, [])
+        if method.upper() not in verbs:
+            verbs.append(method.upper())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"paths": sorted(self.paths),
+                "methods": {k: sorted(v) for k, v in self.methods.items()}}
+
+
 def _read_dom(page) -> DomInfo:
     data = page.evaluate(DOM_SCRIPT)
     return DomInfo(
@@ -459,6 +493,102 @@ def advance_probe(url: str, headless: bool = True, locale: str = "en-US",
                     break
             page.wait_for_timeout(2500)
             return _read_dom(page)
+        finally:
+            browser.close()
+
+
+def traffic_probe(url: str, headless: bool = True, locale: str = "en-US",
+                  advance: bool = True,
+                  probe_email: Optional[str] = None) -> TrafficLog:
+    """Open the page and record every ``/api/`` request it actually makes.
+
+    This is the complement to :func:`scan_chunks`.  Bundle scanning is
+    generous (it sees routes that are only referenced) but blind to paths
+    assembled at runtime; request capture sees exactly what was called, but
+    only what the probe's own navigation triggered.
+    """
+    from playwright.sync_api import sync_playwright
+
+    email = probe_email or PROBE_EMAIL_TEMPLATE.format(rand=str(int(time.time()))[-6:])
+    log = TrafficLog()
+    with sync_playwright() as p:
+        browser = launch_browser(p, headless=headless)
+        try:
+            context = browser.new_context(no_viewport=True, locale=locale)
+            page = context.new_page()
+            page.on("request", lambda r: log.add(r.method, r.url))
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(2500)
+
+            if advance:
+                mail = page.locator('input[type="email"]').first
+                if mail.count() > 0:
+                    mail.click()
+                    mail.type(email, delay=30)
+                    page.wait_for_timeout(400)
+                    clicked = False
+                    for selector in ('button[type="submit"]', 'button:not([disabled])'):
+                        buttons = page.locator(selector)
+                        for i in range(buttons.count()):
+                            b = buttons.nth(i)
+                            try:
+                                text = (b.inner_text() or "").strip()
+                            except Exception:
+                                continue
+                            if not text or "google" in text.lower():
+                                continue
+                            b.click()
+                            clicked = True
+                            break
+                        if clicked:
+                            break
+                    page.wait_for_timeout(3000)
+            return log
+        finally:
+            browser.close()
+
+
+def _advance_and_capture(url: str, headless: bool = True, locale: str = "en-US",
+                         probe_email: Optional[str] = None):
+    """Advance one step and return ``(dom_after, traffic)`` in a single visit."""
+    from playwright.sync_api import sync_playwright
+
+    email = probe_email or PROBE_EMAIL_TEMPLATE.format(rand=str(int(time.time()))[-6:])
+    log = TrafficLog()
+    with sync_playwright() as p:
+        browser = launch_browser(p, headless=headless)
+        try:
+            context = browser.new_context(no_viewport=True, locale=locale)
+            page = context.new_page()
+            page.on("request", lambda r: log.add(r.method, r.url))
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(2000)
+
+            mail = page.locator('input[type="email"]').first
+            if mail.count() == 0:
+                return _read_dom(page), log
+
+            mail.click()
+            mail.type(email, delay=30)
+            page.wait_for_timeout(400)
+            clicked = False
+            for selector in ('button[type="submit"]', 'button:not([disabled])'):
+                buttons = page.locator(selector)
+                for i in range(buttons.count()):
+                    b = buttons.nth(i)
+                    try:
+                        text = (b.inner_text() or "").strip()
+                    except Exception:
+                        continue
+                    if not text or "google" in text.lower():
+                        continue
+                    b.click()
+                    clicked = True
+                    break
+                if clicked:
+                    break
+            page.wait_for_timeout(2500)
+            return _read_dom(page), log
         finally:
             browser.close()
 
@@ -691,14 +821,21 @@ def probe(
     dom1 = dom_probe(invite_url, headless=headless, locale=locale)
     findings["dom_initial"] = {"url": dom1.url, "inputs": len(dom1.inputs), "buttons": len(dom1.buttons)}
     dom2: Optional[DomInfo] = None
+    traffic: Optional[TrafficLog] = None
     if advance:
-        _emit(on_event, "stage", stage="advance", message="stepping past the first field")
-        dom2 = advance_probe(invite_url, headless=headless, locale=locale)
+        _emit(on_event, "stage", stage="advance",
+              message="stepping past the first field and recording traffic")
+        # One browser does both jobs: the DOM after advancing, and the request
+        # log for the whole visit.  Two separate launches would double the
+        # slowest part of the probe.
+        dom2, traffic = _advance_and_capture(invite_url, headless=headless, locale=locale)
         if dom2.inputs:
             findings["advanced"] = True
             findings["dom_advanced"] = {"url": dom2.url, "inputs": len(dom2.inputs)}
         else:
             findings["advanced"] = False
+        if traffic is not None:
+            findings["traffic"] = traffic.to_dict()
 
     # The two DOMs describe two *different* steps of the same form: the first
     # holds the email field, the second holds the password fields that only
@@ -722,11 +859,20 @@ def probe(
         if deeper != "none":
             captcha = deeper
 
-    endpoints = role_endpoints(scan.get("api_paths") or [], scan.get("endpoint_fragments") or [])
-    state_endpoints = find_state_endpoints(scan.get("api_paths") or [])
-    sign_in = find_sign_in_endpoint(
-        scan.get("api_paths") or [], scan.get("endpoint_fragments") or []
-    )
+    # Merge what the bundles mention with what the page actually called.
+    observed = list(scan.get("api_paths") or [])
+    captured = list(traffic.paths) if traffic is not None else []
+    merged = list(dict.fromkeys(observed + captured))
+    findings["endpoint_sources"] = {
+        "from_bundles": len(observed),
+        "from_traffic": len(captured),
+        "only_in_traffic": sorted(set(captured) - set(observed)),
+        "only_in_bundles": sorted(set(observed) - set(captured)),
+    }
+
+    endpoints = role_endpoints(merged, scan.get("endpoint_fragments") or [])
+    state_endpoints = find_state_endpoints(merged)
+    sign_in = find_sign_in_endpoint(merged, scan.get("endpoint_fragments") or [])
     if not state_endpoints:
         warnings.append(
             "no account-state endpoint was found. Endpoints like /api/credits usually "
@@ -778,6 +924,22 @@ def probe(
         probed_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
     )
     profile.selector_stability = {k: profile.stability_of(k) for k in profile.selectors}
+
+    # Say which facts are measured and which are inferred, so a human knows
+    # where to look.  Everything here is derived from what actually happened
+    # during this probe -- nothing is filled in to look complete.
+    profile.confidence = {
+        "invite_payload": "measured" if payload else "inferred",
+        "attribution": "measured" if attribution["kind"] != "unknown" else "inferred",
+        "selectors": "measured" if selectors else "inferred",
+        "steps": "measured" if steps else "inferred",
+        "verification": "measured" if verification["mode"] != "unknown" else "inferred",
+        "captcha": "measured" if captcha != "suspected" else "inferred",
+        "endpoints": (
+            "measured" if traffic is not None and traffic.paths else
+            ("inferred" if endpoints else "inferred")
+        ),
+    }
 
     if not profile.selectors.get("email"):
         warnings.append("no email input found; the registration form may not start with an email")

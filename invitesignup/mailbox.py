@@ -369,12 +369,35 @@ def _random_password(length: int = 16) -> str:
     return "".join(random.choices(alphabet, k=length))
 
 
-PROVIDERS = {
-    "mail.tm": MailTmProvider,
-    "tempmail.io": TempMailIoProvider,
-    "guerrillamail": GuerrillaMailProvider,
-}
+PROVIDERS: Dict[str, type] = {}
+
+
+def register_provider(name: str):
+    """Decorator that adds a provider class to the registry.
+
+    The three built-in providers register themselves below.  A caller with a
+    private inbox (IMAP, a corporate relay) can add one without touching this
+    module: subclass :class:`Provider` and decorate it.
+    """
+    def decorator(cls):
+        PROVIDERS[name] = cls
+        cls.provider_name = name
+        return cls
+    return decorator
+
+
+register_provider("mail.tm")(MailTmProvider)
+register_provider("tempmail.io")(TempMailIoProvider)
+register_provider("guerrillamail")(GuerrillaMailProvider)
+
 DEFAULT_ORDER = ("mail.tm", "tempmail.io", "guerrillamail")
+
+
+def available_providers() -> List[str]:
+    """Registered provider names, default order first."""
+    ordered = [n for n in DEFAULT_ORDER if n in PROVIDERS]
+    ordered += sorted(n for n in PROVIDERS if n not in ordered)
+    return ordered
 
 
 # --------------------------------------------------------------------------
