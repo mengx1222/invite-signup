@@ -295,3 +295,25 @@ the site refused this mailbox: Disposable email addresses are not allowed
 
 而不是等两分钟才说"没收到验证邮件"。这两种情况的处理方式完全不同，
 所以必须分开报。
+
+---
+
+## 通用性：没有哪个站点是"默认"
+
+早期版本把 `sign_in_endpoint` 和 session 端点默认成 Better Auth 的路径
+（`/api/auth/sign-in/email`、`/api/auth/get-session`）。那让整个工具**悄悄变成了
+Yila 专用**：在任何用 Better Auth 的站点上"能跑"，在别处一律失败，而且失败信息
+误导（"没有会话"而不是"这个 profile 没告诉我怎么登录"）。
+
+现在：
+
+- `sign_in_endpoint` **没有默认值**。探站器能找到就填，找不到就留空。
+- 留空时 `verify` 会明确说「profile 没有 sign_in_endpoint，无法独立验收」，
+  而不是去试一个这个站可能从来没有过的路径。
+- `needs_review()` 会把「缺 sign-in 端点」列进待确认清单。
+- 手写 profile 时端点写完整 URL 或相对路径都可以，不会被拼成
+  `https://sitehttps://site/api/me`。
+
+**同理**：只有邮箱、没有密码的单步表单（magic link 类站点）现在也能跑。
+verdict 早就说它 automatable，但 runner 会因为"没有密码框"报错——判定和执行
+打架。现在没有密码框就跳过填密码，直接提交。

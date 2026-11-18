@@ -146,3 +146,34 @@ def test_failing_job_is_marked_failed_not_raised():
         time.sleep(0.05)
     assert job.status == "failed"
     assert "ValueError" in job.error
+
+
+def test_profile_name_cannot_escape_the_profiles_directory():
+    from invitesignup.web import _safe_profile_name
+
+    for hostile in ("../../etc/passwd", "..\\..\\win.ini", "a/b"):
+        try:
+            _safe_profile_name(hostile)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{hostile!r} was accepted")
+
+
+def test_ordinary_profile_names_are_kept():
+    from invitesignup.web import _safe_profile_name
+
+    assert _safe_profile_name("yila") == "yila.json"
+    assert _safe_profile_name("yila.example") == "yila.example.json"
+    assert _safe_profile_name("already.json") == "already.json"
+    assert _safe_profile_name("") == ""
+
+
+def test_dot_only_names_are_rejected_or_emptied():
+    from invitesignup.web import _safe_profile_name
+
+    for name in (".", "..", "..."):
+        try:
+            assert _safe_profile_name(name) == ""
+        except ValueError:
+            pass

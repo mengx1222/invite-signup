@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 # Bumped when a field changes meaning or disappears.  Profiles written by an
 # older version are read on a best-effort basis and say so, rather than being
@@ -106,8 +107,12 @@ class SiteProfile:
     # label -> path, for endpoints that report live account state
     # (credit balance, referral stats, ...).  The verifier reads these too.
     endpoints_state: Dict[str, str] = field(default_factory=dict)
-    # how to sign in again from scratch, for independent verification
-    sign_in_endpoint: str = "/api/auth/sign-in/email"
+    # How to sign in again from scratch, for independent verification.
+    # Deliberately empty by default: `/api/auth/sign-in/email` is a Better Auth
+    # convention, and defaulting to it made the whole pipeline quietly
+    # Yila-shaped -- it would appear to work only on sites that happen to use
+    # that library.  The prober fills this in; a profile without it says so.
+    sign_in_endpoint: str = ""
     sign_in_fields: Dict[str, str] = field(default_factory=dict)
 
     # keys used when talking to the endpoints (site specific)
@@ -207,7 +212,28 @@ class SiteProfile:
             reasons.append("no account-state endpoint (balance will not be reported)")
         if self.confidence.get("selectors") == "inferred":
             reasons.append("selectors were inferred, not confirmed against the live form")
+        if not self.sign_in_endpoint:
+            reasons.append(
+                "no sign-in endpoint: independent verification cannot run until "
+                "this is filled in"
+            )
         return reasons
+
+    def absolute(self, path: str) -> str:
+        """Resolve an endpoint against ``base_url``, tolerating a full URL.
+
+        Profiles are hand-edited, and writing ``"https://site/api/me"`` where
+        a path was expected is an easy mistake.  Blindly concatenating
+        produced ``"https://sitehttps://site/api/me"`` -- a URL that fails in
+        a way that looks like the site is down.  Accept either form.
+        """
+        if not path:
+            return ""
+        if urlsplit(path).scheme:
+            return path
+        if not path.startswith("/"):
+            path = "/" + path
+        return self.base_url.rstrip("/") + path
 
     def missing(self) -> List[str]:
         """Required fields that are still empty."""

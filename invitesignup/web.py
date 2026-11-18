@@ -103,6 +103,28 @@ class Job:
         }
 
 
+def _safe_profile_name(name: str) -> str:
+    """Turn user input into a filename that cannot leave ``profiles/``.
+
+    Stripping ``/`` and ``\\`` already blocks traversal, but it also turns
+    ``"../../etc/passwd"`` into ``"......etcpasswd.json"`` -- a file the user
+    did not ask for, sitting in the profiles directory.  Reject anything that
+    is not a plain name instead of silently mangling it.
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if "/" in name or "\\" in name or name in (".", ".."):
+        raise ValueError(f"not a plain file name: {name!r}")
+    safe = "".join(c for c in name if c.isalnum() or c in "-_.")
+    safe = safe.strip(".")
+    if not safe:
+        return ""
+    if not safe.endswith(".json"):
+        safe += ".json"
+    return safe
+
+
 def _kind_for_verdict(verdict) -> str:
     """Map a verdict blocker onto a failure kind, so both share one code table."""
     blockers = getattr(verdict, "blockers", []) or []
@@ -309,11 +331,16 @@ def create_app(output_dir: str = "./output"):
             name = (body.get("save_as") or "").strip()
             saved = ""
             if name:
-                safe = "".join(c for c in name if c.isalnum() or c in "-_.")
-                if safe and not safe.endswith(".json"):
-                    safe += ".json"
+                try:
+                    safe = _safe_profile_name(name)
+                except ValueError as exc:
+                    job.add("error", {"message": str(exc)})
+                    safe = ""
                 if safe:
-                    saved = str(result.profile.save(Path.cwd() / "profiles" / safe))
+                    target = (Path.cwd() / "profiles" / safe).resolve()
+                    root = (Path.cwd() / "profiles").resolve()
+                    if str(target).startswith(str(root)):
+                        saved = str(result.profile.save(target))
             return {
                 "profile": result.profile.to_dict(),
                 "verdict": result.verdict.to_dict() if result.verdict else None,
@@ -405,7 +432,7 @@ def create_app(output_dir: str = "./output"):
                 email,
                 password,
                 sign_in_endpoint=profile.sign_in_endpoint,
-                session_endpoint=profile.endpoints.get("session", "/api/auth/get-session"),
+                session_endpoint=profile.endpoints.get("session", ""),
                 state_endpoints=profile.endpoints_state,
             )
             job.add("stage", {"stage": "done", "message": f"verified={report.verified}"})

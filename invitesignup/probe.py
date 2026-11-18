@@ -1085,7 +1085,11 @@ def probe(
         selectors=selectors,
         endpoints=endpoints,
         endpoints_state=state_endpoints,
-        sign_in_endpoint=sign_in or "/api/auth/sign-in/email",
+        # Empty when the site does not expose a discoverable sign-in route.
+        # Leaving it empty is honest: verify will then say it cannot confirm
+        # a login, instead of trying a Better Auth path that this site may
+        # never have had.
+        sign_in_endpoint=sign_in,
         locale=locale,
         probed_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
     )

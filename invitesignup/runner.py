@@ -305,19 +305,21 @@ def _attempt(
                 if confirm_selector:
                     human_type(page, confirm_selector, result.password)
                 page.wait_for_timeout(300)
-                submit_selector = profile.selectors.get("submit")
-                result.stage = "submit"
-                _emit(on_event, "stage", stage=result.stage, message="submitting the form")
-                if submit_selector:
-                    if not human_click(page, submit_selector):
-                        result.errors.append("submit click failed")
-                        return result
-                else:
-                    click_first_enabled_non_google(page)
-                page.wait_for_timeout(2500)
+            # No password field is not an error: magic-link and OTP-only sites
+            # send the mail straight after the email step.  Reporting "no
+            # password selector" here made the runner reject a shape the
+            # verdict had already declared automatable -- the two disagreed.
+
+            result.stage = "submit"
+            _emit(on_event, "stage", stage=result.stage, message="submitting the form")
+            submit_selector = profile.selectors.get("submit")
+            if submit_selector:
+                if not human_click(page, submit_selector):
+                    result.errors.append("submit click failed")
+                    return result
             else:
-                result.errors.append("no password selector in the profile")
-                return result
+                click_first_enabled_non_google(page)
+            page.wait_for_timeout(2500)
 
             # --- verification ---
             mode = profile.verification.mode
@@ -508,6 +510,7 @@ def _live_captcha(page) -> str:
         return ""
 
     visible_srcs = []
+    saw_visible = False
     for index in range(count):
         element = candidates.nth(index)
         try:
@@ -515,18 +518,23 @@ def _live_captcha(page) -> str:
                 continue
         except Exception:
             continue
+        saw_visible = True
         try:
             src = element.get_attribute("src") or ""
         except Exception:
             src = ""
         if src:
             visible_srcs.append(src)
-        if not visible_srcs:
-            # A visible container with no src is still a challenge widget.
-            visible_srcs.append("<visible-widget>")
 
-    if not visible_srcs:
+    if not saw_visible:
         return ""
+    if not visible_srcs:
+        # A visible container with no src is still a challenge widget, but it
+        # says nothing about *which* one -- so it is classified only after
+        # every element has been inspected.  Doing this inside the loop meant
+        # the first src-less element masked every later one, and a real
+        # Turnstile iframe behind it was reported as a generic "captcha".
+        visible_srcs.append("<visible-widget>")
     blob = " ".join(visible_srcs).lower()
     if "challenges.cloudflare.com" in blob:
         return "turnstile"
@@ -580,12 +588,34 @@ def _in_page_json(page, path: str) -> Any:
 
 
 def _in_page_session(page, profile: SiteProfile) -> Optional[Dict[str, Any]]:
+    """Confirm the account is signed in, using whatever this site exposes.
+
+    The session endpoint is site-specific -- `/api/auth/get-session` is a
+    Better Auth convention, not a universal one.  Falling back to it when a
+    profile has none made the pipeline quietly Yila-shaped: it would "work"
+    everywhere the profile happened to come from a Better Auth site and fail
+    everywhere else with "no session after the flow".
+
+    So: use the profile's endpoint if it has one.  If it does not, fall back
+    to the state endpoints (any of them returning 200 with a body proves a
+    session exists), and only then report that the profile cannot confirm a
+    login.
+    """
     endpoint = profile.endpoints.get("session")
-    if not endpoint:
-        endpoint = "/api/auth/get-session"
-    payload = _in_page_json(page, endpoint)
-    if isinstance(payload, dict):
-        return payload.get("user") or None
+    if endpoint:
+        payload = _in_page_json(page, endpoint)
+        if isinstance(payload, dict):
+            user = payload.get("user")
+            if user:
+                return user
+            # Some sites return the user object at the top level.
+            if payload.get("email") or payload.get("id"):
+                return payload
+
+    for _, state_path in (profile.endpoints_state or {}).items():
+        payload = _in_page_json(page, state_path)
+        if payload:
+            return {"_state_only": True, "_endpoint": state_path}
     return None
 
 

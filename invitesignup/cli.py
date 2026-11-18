@@ -161,7 +161,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         args.email,
         args.password,
         sign_in_endpoint=profile.sign_in_endpoint,
-        session_endpoint=profile.endpoints.get("session", "/api/auth/get-session"),
+        session_endpoint=profile.endpoints.get("session", ""),
         state_endpoints=profile.endpoints_state,
     )
     print(report.summary())
