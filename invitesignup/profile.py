@@ -118,6 +118,11 @@ class SiteProfile:
     # keys used when talking to the endpoints (site specific)
     endpoint_fields: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
+    # Mailbox providers to try first for this site, in order.  Empty means
+    # the default order.  Some sites refuse one provider's domain every time,
+    # so re-learning that on each run wastes a mailbox and a wait.
+    mailbox_prefer: List[str] = field(default_factory=list)
+
     locale: str = "en-US"
     notes: str = ""
     probed_at: str = ""

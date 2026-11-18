@@ -116,6 +116,21 @@ python -m invitesignup ledger
 
 `declined` 单独列出来，是为了让"没试过"和"试了被闸门挡住"能区分开。
 
+### 临时收件箱以后还能打开
+
+建号用的临时邮箱，凭据也一起存在 `accounts.jsonl` 的 `inbox` 字段里。
+站点以后发密码重置、安全提醒，你还能读到：
+
+```powershell
+python -m invitesignup inbox --email abc123@example-temp.test
+python -m invitesignup inbox --email ... --show     # 连正文一起打印
+```
+
+只存地址不存密码等于没存——地址是只写的，信到了没人能读。所以
+`inbox` 字段要么带齐凭据，要么干脆为空：**能重开的才写，不能重开的不装作能**。
+
+> 你自己用 `--email` 指定的邮箱不会有这个字段，因为那本来就是你自己的。
+
 ---
 
 ## 常见情况怎么处理
@@ -124,7 +139,7 @@ python -m invitesignup ledger
 | :--- | :--- |
 | `blocked-by-captcha` | 别绕。手动注册一次，或换站 |
 | 收不到验证邮件 | 看 `output/mail_dump_<site>.txt`——信到了但解析失败，和没到是两回事 |
-| 临时邮箱被拒 | 换 `--email` 用自己邮箱，脚本会停下来让你贴链接 |
+| 临时邮箱被拒 | 在 profile 的 `mailbox_prefer` 里记下这站认哪个 provider；或换 `--email` 用自己邮箱，脚本会停下来让你贴链接 |
 | 提示 `mailbox-rejected` | 站点明确拒了这个域名。加 `--email` 换真实邮箱，或加 `--wait-link` 走半自动 |
 | `skipped-duplicate` | 今天这个码已经成功过了。确实要重跑加 `--force` |
 | `blocked-by-quota` | 名额用完了。这是保护，不是 bug |

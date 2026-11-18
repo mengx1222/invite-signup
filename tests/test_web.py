@@ -262,6 +262,84 @@ def test_a_skipped_duplicate_is_not_dressed_up_as_a_failure():
     assert payload["failure_hint"] == ""
 
 
+def test_the_inbox_command_reads_back_what_the_runner_stored():
+    """End to end on the piece that makes the credentials worth storing.
+
+    Recording a password nobody can use is decoration, so this drives the
+    same code path the CLI does: write an account row, then reopen it.
+    """
+    import io as _io
+    from contextlib import redirect_stdout
+
+    from invitesignup import cli
+    from invitesignup.mailbox import PROVIDERS, Message, Provider
+
+    class Fake(Provider):
+        provider_name = "reopenable"
+
+        def __init__(self, proxy=None, timeout=20):
+            self.address = ""
+
+        def credentials(self):
+            return {"password": "pw"}
+
+        def reopen(self, creds):
+            self.address = creds.get("address", "")
+            return self.address
+
+        def messages(self):
+            return [Message(id="m1", subject="Reset your password")]
+
+        def body(self, message_id):
+            return "click here"
+
+    PROVIDERS["reopenable"] = Fake
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accounts.jsonl"
+            path.write_text(
+                json.dumps({
+                    "site": "example.test",
+                    "email": "box@reopenable.test",
+                    "password": "acct-pw",
+                    "inbox": {"provider": "reopenable",
+                              "address": "box@reopenable.test",
+                              "password": "pw"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            buf = _io.StringIO()
+            with redirect_stdout(buf):
+                rc = cli.main(["inbox", "--email", "box@reopenable.test", "--file", str(path)])
+        out = buf.getvalue()
+    finally:
+        PROVIDERS.pop("reopenable", None)
+
+    assert rc == 0
+    assert "box@reopenable.test" in out
+    assert "Reset your password" in out
+
+
+def test_the_inbox_command_explains_a_missing_record():
+    import io as _io
+    from contextlib import redirect_stdout
+
+    from invitesignup import cli
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "accounts.jsonl"
+        path.write_text(
+            json.dumps({"email": "box@x.test", "password": "p"}) + "\n",
+            encoding="utf-8",
+        )
+        buf = _io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["inbox", "--email", "box@x.test", "--file", str(path)])
+    assert rc == 1
+    # "Nothing to reopen" must not look like a crash.
+    assert "no stored inbox credentials" in buf.getvalue()
+
+
 def test_dot_only_names_are_rejected_or_emptied():
     from invitesignup.web import _safe_profile_name
 

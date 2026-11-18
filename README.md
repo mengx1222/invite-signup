@@ -146,6 +146,9 @@ python -m invitesignup verify --profile profiles/example.json \
 
 - **不使用真实邮箱服务商的域名拼造不存在的地址。** 一次性邮箱只来自公开临时邮箱服务；
   这条是 `RegisterHub` 上游 `sites/milionseek.py` 的做法，本项目**不继承**。
+- **临时收件箱要能重开。** 建号用的邮箱凭据随账号一起存在 `accounts.jsonl` 的
+  `inbox` 字段，`python -m invitesignup inbox --email <地址>` 可以重新打开，
+  这样站点以后发密码重置还读得到。只存地址不存密码等于没存。
 - **凭据不提交进仓库。** 账号落在本地 `output/accounts.jsonl`（已 gitignore），
   台账 `output/ledger.jsonl` 会自动把 `password` / `token` 之类的字段脱敏。
 

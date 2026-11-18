@@ -147,12 +147,29 @@ class Message:
 
 
 class Provider:
-    """Base class: create a mailbox, list messages, read one message."""
+    """Base class: create a mailbox, list messages, read one message.
+
+    ``credentials`` and ``reopen`` exist because a temporary address that
+    cannot be opened again is a dead end: the site may later send a password
+    reset or a security notice to an inbox nobody can read.  A provider that
+    genuinely cannot be reopened returns nothing from ``credentials`` rather
+    than handing back something that merely looks restorable.
+    """
 
     name = "base"
 
     def create(self) -> str:
         raise NotImplementedError
+
+    def credentials(self) -> Dict[str, str]:
+        """What is needed to open this same inbox again, minus the address."""
+        return {}
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        """Attach to an existing inbox and return its address."""
+        raise NotImplementedError(
+            f"{self.provider_name} cannot reopen an existing inbox"
+        )
 
     def messages(self) -> List[Message]:
         raise NotImplementedError
@@ -172,6 +189,7 @@ class MailTmProvider(Provider):
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self._token: Optional[str] = None
         self._address: Optional[str] = None
+        self._password: str = ""
 
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"} if self._token else {}
@@ -184,23 +202,42 @@ class MailTmProvider(Provider):
             raise MailboxError("mail.tm returned no domains")
         domain = members[0]["domain"]
         address = f"{_random_local_part()}@{domain}"
-        password = _random_password()
+        # Kept on the instance, not in a local: the password is the only way
+        # back into this inbox, and throwing it away made the address
+        # write-only -- the account could never be recovered.
+        self._password = _random_password()
         r = requests.post(
             f"{self.base}/accounts",
-            json={"address": address, "password": password},
+            json={"address": address, "password": self._password},
             proxies=self.proxies, timeout=self.timeout,
         )
         if r.status_code >= 300:
             raise MailboxError(f"mail.tm create failed: {r.status_code} {r.text[:120]}")
+        self._address = address
+        self._login()
+        return address
+
+    def _login(self) -> None:
         r = requests.post(
             f"{self.base}/token",
-            json={"address": address, "password": password},
+            json={"address": self._address, "password": self._password},
             proxies=self.proxies, timeout=self.timeout,
         )
         if r.status_code >= 300:
             raise MailboxError(f"mail.tm token failed: {r.status_code} {r.text[:120]}")
         self._token = r.json()["token"]
+
+    def credentials(self) -> Dict[str, str]:
+        return {"password": getattr(self, "_password", "")}
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        address = credentials.get("address", "")
+        password = credentials.get("password", "")
+        if not (address and password):
+            raise MailboxError("mail.tm needs both an address and its password")
         self._address = address
+        self._password = password
+        self._login()
         return address
 
     def messages(self) -> List[Message]:
@@ -258,6 +295,18 @@ class GuerrillaMailProvider(Provider):
         if not (self._sid and self._address):
             raise MailboxError("guerrillamail returned no address")
         return self._address
+
+    def credentials(self) -> Dict[str, str]:
+        return {"token": self._sid or ""}
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        address = credentials.get("address", "")
+        sid = credentials.get("token", "")
+        if not (address and sid):
+            raise MailboxError("guerrillamail needs both an address and a session token")
+        self._address = address
+        self._sid = sid
+        return address
 
     def messages(self) -> List[Message]:
         out: List[Message] = []
@@ -335,6 +384,18 @@ class TempMailIoProvider(Provider):
         if not self._address:
             raise MailboxError("tempmail.io returned no address")
         return self._address
+
+    def credentials(self) -> Dict[str, str]:
+        return {"token": self._token or ""}
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        address = credentials.get("address", "")
+        token = credentials.get("token", "")
+        if not (address and token):
+            raise MailboxError("tempmail.io needs both an address and a token")
+        self._address = address
+        self._token = token
+        return address
 
     def messages(self) -> List[Message]:
         r = requests.get(
@@ -455,13 +516,45 @@ class Mailbox:
         """Create a mailbox, trying the site's preferred providers first.
 
         Some sites always refuse a particular provider's domains.  Recording
-        that per site (``profile.notes``-adjacent, or just a CLI flag) turns
-        every run from "fail on mail.tm, then succeed on the second try" into
-        "succeed on the first try".
+        that per site (``profile.mailbox_prefer``) turns every run from "fail
+        on mail.tm, then succeed on the second try" into "succeed on the
+        first try".
         """
         order = list(dict.fromkeys([p for p in preferred if p in PROVIDERS]
                                    + [p for p in fallback if p in PROVIDERS]))
         return self.create(order)
+
+    # ---------------- reopen ----------------
+
+    def export(self) -> Dict[str, str]:
+        """Everything needed to open this inbox again later.
+
+        Empty when the provider cannot be reopened.  An address with no
+        credentials is deliberately *not* returned as if it were restorable.
+        """
+        if self.provider is None or not self.address:
+            return {}
+        try:
+            creds = self.provider.credentials() or {}
+        except Exception:
+            return {}
+        if not any(creds.values()):
+            return {}
+        return {
+            "provider": getattr(self.provider, "provider_name", self.provider.name),
+            "address": self.address,
+            **{k: v for k, v in creds.items() if v},
+        }
+
+    def reopen(self, saved: Dict[str, str]) -> str:
+        """Attach to an inbox described by :meth:`export`."""
+        name = saved.get("provider", "")
+        cls = PROVIDERS.get(name)
+        if cls is None:
+            raise NoProviderAvailable(f"unknown mailbox provider: {name!r}")
+        self.provider = cls(proxy=self.proxy, timeout=self.timeout)
+        self.address = self.provider.reopen(dict(saved))
+        return self.address
 
     # ---------------- dumping ----------------
 

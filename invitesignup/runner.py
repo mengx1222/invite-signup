@@ -51,6 +51,10 @@ class RunResult:
     snapshot: str = ""
     page_text: str = ""
     mail_dump: str = ""
+    # How to reopen the temporary inbox later.  Empty when the mailbox was
+    # supplied by the operator (they already own it) or the provider cannot
+    # be reopened.
+    inbox: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     api_trace: List[str] = field(default_factory=list)
     verdict_state: str = ""
@@ -68,6 +72,7 @@ class RunResult:
             "snapshot": self.snapshot,
             "page_text": self.page_text,
             "mail_dump": self.mail_dump,
+            "inbox": self.inbox,
             "errors": self.errors,
             "verdict_state": self.verdict_state,
             "notes": self.notes,
@@ -222,7 +227,12 @@ def _attempt(
     else:
         mailbox = Mailbox(dump_path=dump_path)
         try:
-            result.email = mailbox.create()
+            # A site that keeps refusing one provider's domain should not cost
+            # a failed run every time.  The preference is recorded in the
+            # profile; with no preference this is just the default order.
+            preferred = list(getattr(profile, "mailbox_prefer", []) or [])
+            result.email = mailbox.create_preferring(preferred) if preferred else mailbox.create()
+            result.inbox = mailbox.export()
         except Exception as exc:
             result.stage = "mailbox-failed"
             result.errors.append(f"{type(exc).__name__}: {exc}")
@@ -442,6 +452,9 @@ def _attempt(
                 "invite_code": profile.invite_code,
                 "verified": result.verified,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                # Without this the temporary inbox is write-only: a password
+                # reset from the site would land somewhere nobody can read.
+                "inbox": result.inbox,
             }, ensure_ascii=False) + "\n")
 
     return result

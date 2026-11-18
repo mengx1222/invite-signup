@@ -4,6 +4,7 @@
     python -m invitesignup run    --profile profile.json [--email ...] [--allow-multi]
     python -m invitesignup verify --profile profile.json --email ... --password ...
     python -m invitesignup ledger [--file output/ledger.jsonl]
+    python -m invitesignup inbox  --email <address> [--file output/accounts.jsonl]
 
 ``probe`` is read-only apart from a single existence check (see
 ``--no-advance``).  ``run`` creates one account.  ``verify`` proves an
@@ -168,6 +169,70 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if report.verified else 1
 
 
+def cmd_inbox(args: argparse.Namespace) -> int:
+    """Reopen a temporary inbox recorded when the account was created.
+
+    The credentials exist so that mail arriving *after* signup -- a password
+    reset, a security notice -- is still readable.  Without a way to use them
+    they would be decoration, so this command is the proof they work.
+    """
+    from .mailbox import Mailbox
+
+    rows = []
+    path = Path(args.file)
+    if not path.exists():
+        print(f"[-] no account file at {path}")
+        return 1
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+
+    wanted = (args.email or "").strip().lower()
+    match = None
+    for row in reversed(rows):
+        if (row.get("email") or "").lower() == wanted:
+            match = row
+            break
+    if match is None:
+        print(f"[-] no account recorded for {args.email}")
+        return 1
+
+    saved = match.get("inbox") or {}
+    if not saved:
+        print(f"[!] {match.get('email')} has no stored inbox credentials.")
+        print("    Either the mailbox was yours already, or it was created")
+        print("    before credentials were recorded. Nothing to reopen.")
+        return 1
+
+    box = Mailbox()
+    try:
+        box.reopen(saved)
+    except Exception as exc:
+        print(f"[-] could not reopen: {type(exc).__name__}: {exc}")
+        return 1
+
+    messages = box.provider.messages() if box.provider else []
+    print(f"[inbox] {box.address}  ({saved.get('provider','')})")
+    if not messages:
+        print("        no messages")
+        return 0
+    for m in messages:
+        print(f"  {m.subject or '(no subject)'}   id={m.id}")
+    if args.show:
+        for m in messages:
+            print()
+            print("=" * 60)
+            print(m.subject)
+            print("=" * 60)
+            print((box.provider.body(m.id) if box.provider else "")[:4000])
+    return 0
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     book = ledger_mod.Ledger.open(args.file)
     for row in book.read():
@@ -230,6 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--email", required=True)
     v.add_argument("--password", required=True)
     v.set_defaults(func=cmd_verify)
+
+    i = sub.add_parser("inbox", help="reopen a temporary inbox used for signup")
+    i.add_argument("--email", required=True, help="the address the account was created with")
+    i.add_argument("--file", default="./output/accounts.jsonl")
+    i.add_argument("--show", action="store_true", help="print message bodies")
+    i.set_defaults(func=cmd_inbox)
 
     l = sub.add_parser("ledger", help="show the run ledger")
     l.add_argument("--file", default="./output/ledger.jsonl")
