@@ -524,3 +524,124 @@ def test_already_registered_aborts_the_batch_instead_of_retrying():
     _classify_outcome(result)
     assert result.failure_kind == "site_rejected"
     assert result.failure_action == "abort"
+
+
+def test_mail_cx_choosing_an_address_is_the_whole_creation():
+    """mail.cx has no signup step: the name *is* the mailbox.
+
+    That is what makes it usable as a pool -- an address costs a string
+    rather than an API call, so a run does not burn a quota unit to get one.
+    """
+    from invitesignup.mailbox import MailCxProvider
+
+    p = MailCxProvider()
+    address = p.create()
+    assert address.endswith("@uqu.me")
+    assert len(address.split("@")[0]) >= 2
+    # No secret exists, so nothing should look like a stored credential.
+    assert p.credentials() == {}
+
+
+def test_mail_cx_treats_204_as_no_mail_yet_not_as_a_failure():
+    """The endpoint long-polls for 25 s and answers 204 when nothing arrived.
+
+    Reading 204 as an empty inbox would turn every wait into "no mail", which
+    is indistinguishable from the site never sending anything.
+    """
+    import types
+
+    import invitesignup.mailbox as mb
+
+    class Resp:
+        status_code = 204
+        text = ""
+
+        def json(self):
+            # A real 204 has an empty body, so json() raises.  Returning {}
+            # here would hide the very failure this test is about.
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    fake = types.SimpleNamespace(get=lambda *a, **k: Resp())
+    original = mb.requests
+    mb.requests = fake
+    try:
+        p = mb.MailCxProvider()
+        p.create()
+        assert p.messages() == []
+    finally:
+        mb.requests = original
+
+
+def test_mail_cx_reads_a_body_and_follows_the_cursor():
+    import types
+
+    import invitesignup.mailbox as mb
+
+    seen = {}
+
+    class Resp:
+        def __init__(self, code, payload):
+            self.status_code = code
+            self._p = payload
+            self.text = ""
+
+        def json(self):
+            return self._p
+
+    def fake_get(url, **kw):
+        seen.setdefault("urls", []).append(url)
+        if "/email/" in url:
+            return Resp(200, {"text_body": "code 123456", "html_body": ""})
+        return Resp(200, {
+            "emails": [{"id": "e1", "subject": "Verify",
+                        "preview_text": "hello",
+                        "created_at": "2026-11-19T00:00:00Z"}],
+            "next_since": "999",
+        })
+
+    original = mb.requests
+    mb.requests = types.SimpleNamespace(get=fake_get)
+    try:
+        p = mb.MailCxProvider()
+        p.create()
+        msgs = p.messages()
+        assert [m.id for m in msgs] == ["e1"]
+        assert p.body("e1") == "code 123456"
+        # The second inbox call must carry the cursor, or every poll would
+        # return the same mail and the "is it new?" guard would be bypassed.
+        p.messages()
+        assert any("since=999" in u for u in seen["urls"])
+    finally:
+        mb.requests = original
+
+
+def test_a_preview_is_never_mistaken_for_the_body():
+    """The truncation bug that broke a real signup.
+
+    mail.cx returns ``preview_text`` (180 chars in the real case) alongside a
+    794-char body.  Putting the preview into Message.body made poll() think
+    the body had already been read, so it extracted a verification link cut
+    off mid-token -- the flow reached "no session" with no error anywhere.
+    """
+    import types
+
+    import invitesignup.mailbox as mb
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"emails": [{"id": "e1", "subject": "Verify",
+                                "preview_text": "truncated https://x.test/verify?tok",
+                                "created_at": "2026-11-19T00:00:00Z"}]}
+
+    original = mb.requests
+    mb.requests = types.SimpleNamespace(get=lambda *a, **k: Resp())
+    try:
+        p = mb.MailCxProvider()
+        p.create()
+        msgs = p.messages()
+        assert msgs[0].body == "", "the preview must not masquerade as the body"
+    finally:
+        mb.requests = original

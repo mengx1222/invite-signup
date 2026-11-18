@@ -424,6 +424,105 @@ class TempMailIoProvider(Provider):
         return ""
 
 
+class MailCxProvider(Provider):
+    """mail.cx -- pick any address, no signup, mail buffers on arrival.
+
+    This is the first provider that does not *create* anything: the address
+    is the mailbox.  Mail starts buffering the moment the SMTP gateway
+    accepts it, so "creating a mailbox" and "choosing a name" are the same
+    action.  That is what makes a pool practical here -- an address costs a
+    string, not an API call.
+
+    Verified by hand before this class existed: an arbitrary address under
+    uqu.me received real mail and its body was readable without a token.
+
+    Two limits worth knowing rather than discovering later:
+
+    * Free tier keeps mail for **one hour**.  Enough for a verification
+      flow; not a mailbox for later password resets.
+    * ``GET /v1/inbox/<addr>`` long-polls for up to 25 s and returns 204 when
+      nothing arrived.  Treating 204 as "empty inbox" instead of "keep
+      waiting" would make every run look like a mail timeout.
+    """
+
+    name = "mail.cx"
+    BASE = "https://mail.cx/v1"
+    # From GET /v1/config (system_domains), which is public.
+    DOMAINS = ("uqu.me", "ddker.com", "9k3r.com")
+
+    def __init__(self, proxy: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT):
+        self.timeout = timeout
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        self._address = ""
+        self._since: Optional[str] = None
+
+    # ---------------- creation ----------------
+
+    def create(self) -> str:
+        """Choose an address.  Nothing is registered; the name is the inbox."""
+        domain = self.DOMAINS[0]
+        self._address = f"{_random_local_part(10)}@{domain}"
+        return self._address
+
+    def credentials(self) -> Dict[str, str]:
+        # The address alone is enough to read it again, so there is no secret
+        # to store -- but the export still has to say so explicitly rather
+        # than leave a future caller guessing.
+        return {}
+
+    def reopen(self, credentials: Dict[str, str]) -> str:
+        address = credentials.get("address", "")
+        if not address:
+            raise MailboxError("mail.cx needs an address to reopen")
+        self._address = address
+        return address
+
+    # ---------------- reading ----------------
+
+    def messages(self) -> List[Message]:
+        out: List[Message] = []
+        for item in self._emails():
+            # ``preview_text`` is a truncated teaser -- 180 chars in the real
+            # message that exposed this, against a 794-char body.  Putting it
+            # in ``body`` made poll() believe the body was already read, so it
+            # never fetched the full message and extracted a link cut off
+            # mid-token.  Leave body empty; poll() fetches the real thing.
+            out.append(Message(
+                id=item.get("id", ""),
+                subject=item.get("subject", "") or "",
+                body="",
+                received_at=parse_timestamp(item.get("created_at")),
+            ))
+        return out
+
+    def _emails(self) -> List[Dict[str, Any]]:
+        if not self._address:
+            return []
+        url = f"{self.BASE}/inbox/{self._address}"
+        if self._since:
+            url += f"?since={self._since}"
+        r = requests.get(url, proxies=self.proxies, timeout=self.timeout + 30)
+        if r.status_code == 204:
+            # Long-poll elapsed with nothing new.  Not an error, and not an
+            # empty inbox -- the caller should simply ask again.
+            return []
+        if r.status_code >= 300:
+            raise MailboxError(f"mail.cx inbox failed: {r.status_code} {r.text[:120]}")
+        payload = r.json() or {}
+        self._since = payload.get("next_since") or self._since
+        return payload.get("emails") or []
+
+    def body(self, message_id: str) -> str:
+        r = requests.get(
+            f"{self.BASE}/email/{message_id}",
+            proxies=self.proxies, timeout=self.timeout,
+        )
+        if r.status_code >= 300:
+            raise MailboxError(f"mail.cx email failed: {r.status_code}")
+        data = r.json() or {}
+        return flatten(data.get("text_body")) or flatten(data.get("html_body"))
+
+
 class ImapProvider(Provider):
     """A real mailbox you own, read over IMAP.
 
@@ -703,6 +802,7 @@ def register_provider(name: str):
     return decorator
 
 
+register_provider("mail.cx")(MailCxProvider)
 register_provider("imap")(ImapProvider)
 register_provider("mail.tm")(MailTmProvider)
 register_provider("tempmail.io")(TempMailIoProvider)
