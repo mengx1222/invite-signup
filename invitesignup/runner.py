@@ -306,6 +306,8 @@ def _attempt(
                     human_type(page, confirm_selector, result.password)
                 page.wait_for_timeout(300)
                 submit_selector = profile.selectors.get("submit")
+                result.stage = "submit"
+                _emit(on_event, "stage", stage=result.stage, message="submitting the form")
                 if submit_selector:
                     if not human_click(page, submit_selector):
                         result.errors.append("submit click failed")
@@ -344,6 +346,7 @@ def _attempt(
                         timeout_secs=poll_timeout,
                         not_before=started,
                         before_ids=mail_baseline,
+                        on_tick=_wait_ticker(on_event, result.stage, poll_timeout),
                     )
                     if not poll.found:
                         result.errors.append("no verification link arrived: " + "; ".join(poll.errors[-3:]))
@@ -374,6 +377,7 @@ def _attempt(
                     timeout_secs=poll_timeout,
                     not_before=started,
                     before_ids=mail_baseline,
+                    on_tick=_wait_ticker(on_event, result.stage, poll_timeout),
                 )
                 if not poll.found:
                     result.errors.append("no verification code arrived: " + "; ".join(poll.errors[-3:]))
@@ -539,6 +543,26 @@ def _link_hints(profile: SiteProfile) -> List[str]:
     if sample:
         hints.append(sample.rsplit("/", 1)[-1][:24])
     return hints
+
+
+def _wait_ticker(on_event: Optional[EventFn], stage: str, total: int):
+    """Turn a mailbox poll tick into a progress event.
+
+    Emits at most once a second and only when the whole-second value changes,
+    so a two-minute wait produces a steady trickle rather than a flood.
+    """
+    if on_event is None:
+        return None
+    state = {"last": -1}
+
+    def tick(elapsed: int, remaining: int) -> None:
+        if elapsed == state["last"]:
+            return
+        state["last"] = elapsed
+        _emit(on_event, "waiting", stage=stage, elapsed=elapsed,
+              remaining=remaining, total=total)
+
+    return tick
 
 
 def _in_page_json(page, path: str) -> Any:

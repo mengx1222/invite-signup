@@ -42,6 +42,23 @@ def _emit(on_event: Optional[EventFn], kind: str, **payload: Any) -> None:
     except Exception:
         pass
 
+
+def _chunk_ticker(on_event: Optional[EventFn], total: int):
+    """Report bundle-scan progress, throttled so it does not flood the stream."""
+    if on_event is None:
+        return None
+    state = {"last": -1}
+
+    def tick(done: int, count: int) -> None:
+        if done == state["last"]:
+            return
+        state["last"] = done
+        _emit(on_event, "substage", stage="chunks",
+              done=done, total=count or total,
+              message=f"{done}/{count or total} bundles")
+
+    return tick
+
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
@@ -164,16 +181,30 @@ def extract_chunks(html: str, base_url: str) -> List[str]:
     return [urllib.parse.urljoin(base_url, s) for s in dict.fromkeys(srcs)]
 
 
-def scan_chunks(chunks: Sequence[str], timeout: int = 30) -> Dict[str, Any]:
-    """Mine chunk source for API endpoints and captcha fingerprints."""
+def scan_chunks(chunks: Sequence[str], timeout: int = 30,
+                on_progress: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+    """Mine chunk source for API endpoints and captcha fingerprints.
+
+    ``on_progress(done, total)`` fires after each bundle.  Scanning is the
+    longest single step of a probe (25 bundles on the reference site), so
+    without this a progress bar sits still for half a minute and looks hung.
+    """
     api_paths: set = set()
     fragments: set = set()
     cookie_candidates: set = set()
     captcha_hits: Dict[str, List[str]] = {}
     verify_samples: List[str] = []
     fetched = 0
+    total = len(chunks)
+    done = 0
 
     for url in chunks:
+        done += 1
+        if on_progress is not None:
+            try:
+                on_progress(done, total)
+            except Exception:
+                pass
         try:
             r = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
             if r.status_code != 200:
@@ -938,7 +969,7 @@ def probe(
 
     chunks = extract_chunks(html, base_url)
     _emit(on_event, "stage", stage="chunks", message=f"scanning {len(chunks)} bundles")
-    scan = scan_chunks(chunks)
+    scan = scan_chunks(chunks, on_progress=_chunk_ticker(on_event, len(chunks)))
     findings["scan"] = scan
 
     _emit(on_event, "stage", stage="config", message="probing public config")

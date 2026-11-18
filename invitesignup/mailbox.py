@@ -508,6 +508,7 @@ class Mailbox:
         not_before: Optional[float] = None,
         before_ids: Optional[set] = None,
         subject_hint: str = "",
+        on_tick: Optional[Callable[[int, int], None]] = None,
     ) -> PollResult:
         """Poll until a verification payload shows up.
 
@@ -519,6 +520,11 @@ class Mailbox:
         skipped outright.  Pass the result of :meth:`current_ids` captured
         before the signup request.  Both guards are applied when both are
         given -- a message must be *new by id* and *newer by time*.
+
+        ``on_tick(elapsed_seconds, remaining_seconds)`` is called about once a
+        second while waiting.  Waiting for mail is the longest silent stretch
+        in the whole pipeline; without this a UI has nothing to show for two
+        minutes.
         """
         result = PollResult()
         if self.provider is None:
@@ -529,8 +535,18 @@ class Mailbox:
         interval = 3.0
         seen: set = set(before_ids or ())
         result.baseline = len(seen)
+        last_tick = 0.0
 
         while time.time() < deadline:
+            if on_tick is not None:
+                now = time.time()
+                if now - last_tick >= 1.0:
+                    last_tick = now
+                    try:
+                        on_tick(int(now - (deadline - timeout_secs)),
+                                max(0, int(deadline - now)))
+                    except Exception:
+                        pass
             try:
                 messages = self.provider.messages()
             except Exception as exc:
