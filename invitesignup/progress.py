@@ -47,7 +47,24 @@ VERIFY_STAGES: List[Stage] = [
     ("done", "核对账户状态", 50),
 ]
 
-STAGE_SETS = {"probe": PROBE_STAGES, "run": RUN_STAGES, "verify": VERIFY_STAGES}
+# The one-click flow is what the web UI actually runs.  Its stages are the
+# coarse steps a person can follow -- "scanning bundles" and "reading public
+# config" are our words, not theirs.
+FLOW_STAGES: List[Stage] = [
+    ("open", "打开邀请链接", 6),
+    ("understand", "搞清楚这个站怎么注册", 18),
+    ("submit", "填写并提交注册", 22),
+    ("mail", "等待并确认验证邮件", 24),
+    ("verify", "用干净会话验证账号", 20),
+    ("save", "保存账号", 10),
+]
+
+STAGE_SETS = {
+    "probe": PROBE_STAGES,
+    "run": RUN_STAGES,
+    "verify": VERIFY_STAGES,
+    "flow": FLOW_STAGES,
+}
 
 # Human labels for stages that appear in events but are not part of the happy
 # path, so a UI can say "已被拦截" instead of showing a raw identifier.
@@ -75,6 +92,9 @@ def percent(kind: str, stage: str) -> int:
     stages = STAGE_SETS.get(kind)
     if not stages:
         return 0
+    # "done" is not a stage in the table; it is the state after the last one.
+    if stage == "done":
+        return 100
     total = sum(weight for _, _, weight in stages) or 1
     done = 0
     for name, _, weight in stages:
@@ -108,6 +128,8 @@ def percent_within(kind: str, stage: str, fraction: float) -> int:
 
 def describe(kind: str, stage: str) -> str:
     """A human label for a stage, falling back to the terminal table."""
+    if stage == "done":
+        return "完成"
     for name, label, _ in STAGE_SETS.get(kind, []):
         if name == stage:
             return label

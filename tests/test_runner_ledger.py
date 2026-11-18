@@ -102,6 +102,38 @@ def test_duplicate_skip_still_writes_a_row():
         assert rows[-1]["stage"] == "skipped-duplicate"
 
 
+def test_a_skip_is_recorded_as_skipped_not_failed():
+    """Nothing went wrong when the duplicate guard fires.
+
+    Recording it as a failure made the history read as if the run broke, and
+    the UI showed a red badge for a healthy outcome.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        profile = _profile()
+        ledger = Path(tmp) / "ledger.jsonl"
+        ledger.write_text(json.dumps({
+            "dedupe_key": "invite-signup:example.test:CODE1:" + __import__("time").strftime("%Y-%m-%d"),
+            "outcome": "success",
+            "stage": "state",
+        }) + "\n", encoding="utf-8")
+
+        run_registration(profile, output_dir=tmp)
+        rows = _rows(tmp)
+        assert rows[-1]["outcome"] == "skipped"
+
+
+def test_a_skip_does_not_count_as_success_for_dedupe():
+    # Only a real success should make the next run skip; otherwise a skipped
+    # row would keep re-skipping forever.
+    with tempfile.TemporaryDirectory() as tmp:
+        from invitesignup.ledger import Ledger, dedupe_key
+
+        book = Ledger.open(Path(tmp) / "ledger.jsonl")
+        key = dedupe_key("s.test", "C1", "2026-11-18")
+        book.append({"dedupe_key": key, "outcome": "skipped"})
+        assert book.already_done(key) is False
+
+
 def test_missing_selector_still_writes_a_row():
     # No email selector: the run dies at the email step, before a browser is
     # even opened.  That path used to leave no trace.

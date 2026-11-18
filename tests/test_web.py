@@ -50,7 +50,32 @@ def test_index_serves_the_page():
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
         assert "invite-signup" in body
-        assert "探站" in body
+
+
+def test_the_page_does_not_expose_internal_vocabulary():
+    """A user hands over a link; "probe", "verdict" and "profile" are our words.
+
+    The page is allowed to use them in code comments, but the visible copy
+    must not: someone who has never seen this repo should not have to learn
+    that a "verdict" exists.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        app = create_app(output_dir=tmp)
+        body = app.test_client().get("/").get_data(as_text=True)
+    # Strip the script block: identifiers there are implementation detail.
+    visible = body.split("<script>")[0]
+    for word in ("探站", "verdict", "profile", "独立验收", "建号"):
+        assert word not in visible, f"internal word {word!r} leaked into the page"
+
+
+def test_the_page_offers_a_single_entry_point():
+    with tempfile.TemporaryDirectory() as tmp:
+        app = create_app(output_dir=tmp)
+        body = app.test_client().get("/").get_data(as_text=True)
+    # One URL box and one button, and the copy says so.
+    assert 'id="url"' in body
+    assert 'id="go"' in body
+    assert "把邀请链接贴进来" in body
 
 
 def test_run_refuses_a_blocked_verdict():

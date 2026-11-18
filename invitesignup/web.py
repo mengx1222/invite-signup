@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from . import ledger as ledger_mod
 from . import progress as progress_mod
+from .flow import run_flow
 from .profile import SiteProfile
 from .probe import probe
 from .runner import run_registration
@@ -305,6 +306,39 @@ def create_app(output_dir: str = "./output"):
         return Response(generate(), mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.post("/api/flow")
+    def api_flow():
+        """One URL in, one account out.  The whole pipeline behind one call.
+
+        The user should not have to know that probing, deciding, registering
+        and verifying are separate ideas.  This runs all of them and streams
+        one progress line.
+        """
+        body = request.get_json(force=True) or {}
+        url = (body.get("invite_url") or "").strip()
+        if not url:
+            return jsonify({
+                "error": "请先粘贴邀请链接",
+                "failure_code": progress_mod.failure_code("config"),
+            }), 400
+
+        def target(job: Job) -> Dict[str, Any]:
+            return run_flow(
+                url,
+                output_dir=out,
+                headless=not body.get("headed", False),
+                poll_timeout=int(body.get("poll_timeout") or 120),
+                link_prompt=_web_link_prompt(job) if body.get("wait_link") else None,
+                on_event=lambda kind, payload: job.add(kind, payload),
+            )
+
+        try:
+            job = store.start("flow", target)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc),
+                            "failure_code": progress_mod.failure_code("config")}), 409
+        return jsonify({"job_id": job.id})
+
     @app.post("/api/probe")
     def api_probe():
         body = request.get_json(force=True) or {}
@@ -461,502 +495,464 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>invite-signup</title>
+<title>邀请注册</title>
 <style>
   :root {
     --bg: #fbfaf8; --card: #fff; --ink: #24211d; --dim: #6b6560;
-    --line: #e6e2dc; --accent: #1c1b19; --ok: #2f7d4f; --warn: #a4691a; --bad: #b03a2e;
-    --tip: #f2efe9;
+    --line: #e6e2dc; --accent: #1c1b19; --ok: #2f7d4f; --warn: #a4691a;
+    --bad: #b03a2e; --soft: #f2efe9;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 15px/1.65 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 30px 20px 90px; }
-  h1 { font-size: 21px; margin: 0 0 3px; letter-spacing: -0.01em; }
-  .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 56px 22px 90px; }
+  h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lead { color: var(--dim); font-size: 14px; margin-bottom: 26px; }
 
-  /* what this tool is, for a first-time visitor */
-  .intro { background: var(--tip); border-radius: 10px; padding: 15px 18px; margin-bottom: 18px;
-           font-size: 13.5px; line-height: 1.7; color: #4a453f; }
-  .intro b { color: var(--ink); }
-  .intro .flow { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
-                 background: #fff; border: 1px solid var(--line); border-radius: 6px;
-                 padding: 9px 12px; margin: 9px 0 0; overflow-x: auto; white-space: nowrap; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 20px 22px; margin-bottom: 16px; }
 
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-          padding: 17px 20px; margin-bottom: 14px; }
-  .card > h2 { font-size: 13px; margin: 0 0 4px; color: var(--dim); font-weight: 600;
-               letter-spacing: .05em; text-transform: uppercase; }
-  .card > .why { font-size: 13px; color: var(--dim); margin: 0 0 14px; line-height: 1.6; }
-
-  label { display: block; font-size: 12.5px; color: var(--dim); margin: 11px 0 4px; }
-  input[type=text], input[type=password], select {
-    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px;
-    font: inherit; background: #fff; color: var(--ink);
+  .entry { display: flex; gap: 10px; }
+  .entry input {
+    flex: 1; min-width: 0; padding: 12px 14px; font: inherit;
+    border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink);
   }
-  input:focus, select:focus { outline: 2px solid #cfc9c0; outline-offset: -1px; }
-  .row { display: flex; gap: 10px; }
-  .row > * { flex: 1; min-width: 0; }
-  button {
-    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 7px;
-    border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  .entry input:focus { outline: 2px solid #cfc9c0; outline-offset: -1px; }
+  .entry button {
+    flex: none; padding: 12px 24px; font: inherit; font-weight: 600;
+    border: 1px solid var(--accent); border-radius: 9px;
+    background: var(--accent); color: #fff; cursor: pointer;
   }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.ghost { background: #fff; color: var(--ink); border-color: var(--line); }
-  .chk { display: flex; align-items: flex-start; gap: 7px; margin-top: 9px;
-         font-size: 13px; color: var(--dim); }
-  .chk input { width: auto; margin-top: 3px; flex: none; }
-  .chk .n { display: block; color: #9b948c; font-size: 12px; margin-top: 1px; }
+  .entry button:disabled { opacity: .45; cursor: not-allowed; }
+  .note { color: var(--dim); font-size: 12.5px; margin-top: 10px; line-height: 1.6; }
 
-  /* progress */
-  .bar-wrap { background: #ece8e2; border-radius: 99px; height: 10px; overflow: hidden; }
-  .bar { height: 100%; width: 0%; background: var(--accent); border-radius: 99px;
-         transition: width .45s ease; }
+  /* the single progress surface */
+  .stage-now { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .stage-sub { color: var(--dim); font-size: 13px; margin-bottom: 14px; min-height: 20px; }
+  .bar-wrap { background: #ece8e2; border-radius: 99px; height: 8px; overflow: hidden; }
+  .bar { height: 100%; width: 0; background: var(--accent); border-radius: 99px;
+         transition: width .5s ease; }
   .bar.done { background: var(--ok); }
   .bar.fail { background: var(--bad); }
-  .pct { font: 600 26px/1 ui-monospace, Consolas, monospace; letter-spacing: -0.02em; }
-  .pct small { font-size: 13px; color: var(--dim); font-weight: 500; margin-left: 6px;
-               font-family: inherit; letter-spacing: 0; }
-  .prog-head { display: flex; align-items: baseline; justify-content: space-between;
-               margin-bottom: 9px; gap: 12px; }
-  .stage-now { font-size: 13px; color: var(--dim); }
-  .steps { margin-top: 14px; display: grid; gap: 3px; }
-  .step { display: flex; align-items: center; gap: 9px; font-size: 13px;
-          color: #a9a29a; padding: 2px 0; }
-  .step .dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid #d8d2ca;
-               flex: none; position: relative; }
+  .pct-row { display: flex; justify-content: space-between; align-items: baseline;
+             margin-top: 8px; font-size: 12.5px; color: var(--dim); }
+  .pct { font: 600 13px/1 ui-monospace, Consolas, monospace; color: var(--ink); }
+
+  .steps { margin-top: 18px; display: grid; gap: 7px; }
+  .step { display: flex; align-items: center; gap: 10px; font-size: 13.5px;
+          color: #b3aca4; }
+  .step .dot { width: 16px; height: 16px; border-radius: 50%; flex: none;
+               border: 1.5px solid #dcd6ce; position: relative; }
   .step.done { color: var(--ink); }
   .step.done .dot { background: var(--ok); border-color: var(--ok); }
-  .step.done .dot::after { content: ""; position: absolute; left: 4px; top: 1px;
+  .step.done .dot::after { content: ""; position: absolute; left: 5px; top: 2px;
     width: 4px; height: 8px; border: solid #fff; border-width: 0 1.5px 1.5px 0;
     transform: rotate(45deg); }
   .step.now { color: var(--ink); font-weight: 600; }
   .step.now .dot { border-color: var(--accent); box-shadow: 0 0 0 3px #ece8e2; }
-  .step .p { margin-left: auto; font-size: 11.5px; color: #b8b1a9;
-             font-family: ui-monospace, Consolas, monospace; }
+  .step.fail { color: var(--bad); font-weight: 600; }
+  .step.fail .dot { border-color: var(--bad); background: #fdf4f2; }
+  .step .hint { margin-left: auto; font-size: 12px; color: #b8b1a9; }
 
-  .log {
-    font: 12.5px/1.7 ui-monospace, "Cascadia Mono", Consolas, monospace;
-    background: #1c1b19; color: #e8e4de; border-radius: 8px; padding: 13px 15px;
-    max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  /* result */
+  .ok-box { border: 1px solid #cfe4d6; background: #f4faf6; border-radius: 10px;
+            padding: 16px 18px; }
+  .ok-box .t { font-weight: 700; color: var(--ok); margin-bottom: 10px; }
+  .kv { display: grid; grid-template-columns: 62px 1fr; gap: 5px 12px; font-size: 13.5px; }
+  .kv .k { color: var(--dim); }
+  .kv .v { font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+
+  /* failure + copyable diagnosis */
+  .fail-box { border: 1px solid #efd3cf; background: #fdf4f2; border-radius: 10px;
+              padding: 16px 18px; }
+  .fail-box .t { font-weight: 700; color: var(--bad); margin-bottom: 8px; }
+  .fail-box .why { font-size: 13.5px; color: #6b3b34; line-height: 1.7; }
+  .diag { margin-top: 14px; }
+  .diag-head { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+  .diag-head .lab { font-size: 12.5px; color: var(--dim); }
+  .diag-head button {
+    padding: 5px 13px; font: inherit; font-size: 12.5px; font-weight: 600;
+    border: 1px solid var(--line); border-radius: 7px; background: #fff;
+    color: var(--ink); cursor: pointer;
   }
-  .log .t { color: #8c857c; }
-  .log .k-stage { color: #8ec6a8; }
-  .log .k-error { color: #e08a80; }
-  .log .k-verdict { color: #d9b36c; }
-  .log .k-waiting { color: #9aa8c6; }
-  .log .k-substage { color: #9aa8c6; }
-  .log .k-finished { color: #8ec6a8; font-weight: 600; }
+  .diag-head button.copied { border-color: #cfe4d6; color: var(--ok); background: #f4faf6; }
+  .diag pre {
+    margin: 0; font: 11.5px/1.6 ui-monospace, Consolas, monospace;
+    background: #fff; border: 1px solid #f0ded9; border-radius: 7px;
+    padding: 11px 13px; max-height: 210px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; color: #6f5a54;
+  }
 
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px;
+  .log { font: 12px/1.7 ui-monospace, Consolas, monospace; color: #8c857c;
+         max-height: 150px; overflow: auto; margin-top: 14px;
+         white-space: pre-wrap; word-break: break-word; }
+  .muted { color: var(--dim); font-size: 13px; }
+  .hidden { display: none !important; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11.5px;
           border: 1px solid var(--line); color: var(--dim); }
   .pill.ok { color: var(--ok); border-color: #cfe4d6; background: #f2f9f4; }
   .pill.bad { color: var(--bad); border-color: #efd3cf; background: #fdf4f2; }
   .pill.warn { color: var(--warn); border-color: #f0e0c6; background: #fdf8ef; }
-
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
-  th { color: var(--dim); font-weight: 600; font-size: 12px; }
-  .muted { color: var(--dim); font-size: 13px; }
-  .err { color: var(--bad); font-size: 13px; margin-top: 9px; white-space: pre-wrap; }
-  .hint { color: var(--dim); font-size: 12.5px; margin-top: 9px; line-height: 1.6; }
-
-  /* failure panel: code + what to do */
-  .fail { border: 1px solid #efd3cf; background: #fdf4f2; border-radius: 9px;
-          padding: 14px 16px; margin-top: 13px; }
-  .fail .code { font: 700 13px/1 ui-monospace, Consolas, monospace; color: var(--bad);
-                letter-spacing: .04em; }
-  .fail .msg { font-size: 13.5px; margin-top: 7px; color: #6b3b34; }
-  .fail .todo { font-size: 13px; margin-top: 8px; color: #4a453f;
-                border-top: 1px dashed #e3c7c1; padding-top: 8px; }
-  .fail .raw { font: 11.5px/1.6 ui-monospace, Consolas, monospace; color: #8a6f68;
-               margin-top: 9px; max-height: 130px; overflow: auto;
-               background: #fff; border: 1px solid #f0ded9; border-radius: 6px; padding: 8px 10px; }
-  .await { border: 1px solid #e0d5bf; background: #fdf8ef; border-radius: 9px;
-           padding: 14px 16px; margin-top: 13px; }
-  .await .t2 { font-weight: 600; font-size: 13.5px; margin-bottom: 7px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>invite-signup</h1>
-  <div class="sub">邀请制注册流水线 · 本机运行 · 一次只跑一个任务</div>
-
-  <div class="intro">
-    <b>这个工具做什么</b>：给一个邀请链接，它先搞清楚这个站怎么注册，再按你的确认建一个号，
-    最后用干净会话验证账号真的能用。<b>站点不限于某一个</b>——换站点只需要重新探站，
-    站点差异都记在 profile 里。
-    <div class="flow">① 探站（只读） → ② 判定能不能跑 → ③ 建一个号 → ④ 独立验收</div>
-  </div>
+  <h1>邀请注册</h1>
+  <div class="lead">把邀请链接贴进来，点一下。剩下的我来做。</div>
 
   <div class="card">
-    <h2>1 · 探站</h2>
-    <p class="why">把一个邀请链接丢进来。它只读，<b>不会建号</b>——唯一的写操作是一次
-      「这个邮箱注册过吗」的检查。跑完会告诉你这站能不能自动注册。</p>
-    <label>邀请链接</label>
-    <input id="invite_url" type="text" placeholder="https://example.com/invite/CODE">
-    <div class="row">
-      <div>
-        <label>保存为（留空则不保存）</label>
-        <input id="save_as" type="text" placeholder="example">
-      </div>
-      <div>
-        <label>语言</label>
-        <select id="locale">
-          <option value="en-US">en-US</option>
-          <option value="zh-CN">zh-CN</option>
-        </select>
-      </div>
+    <div class="entry">
+      <input id="url" type="text" placeholder="https://.../invite/XXXXXX"
+             autocomplete="off" spellcheck="false">
+      <button id="go">开始</button>
     </div>
-    <div class="chk"><input id="headed_probe" type="checkbox">
-      <span>显示浏览器窗口<span class="n">想亲眼看它点了什么就勾上</span></span></div>
-    <div class="chk"><input id="no_advance" type="checkbox">
-      <span>不做存在性检查<span class="n">更保守，但看不到第二步的密码框</span></span></div>
-    <div class="chk"><input id="tos_blocks" type="checkbox">
-      <span>这个站的条款禁止自动化<span class="n">勾上会直接判定为不可跑，流程停在这里</span></span></div>
-    <div style="margin-top:15px"><button id="btn_probe">开始探站</button></div>
-    <div id="probe_err" class="err"></div>
+    <div class="note">
+      我会自己搞清楚这个站怎么注册、建一个号、再用干净会话验证它真能用。
+      中途遇到验证码或站点拒绝会停下并告诉你原因。
+    </div>
   </div>
 
-  <div class="card">
-    <h2>2 · 建号</h2>
-    <p class="why"><b>这一步在做什么</b>：拿第 1 步生成的 profile，按里面的规则自动打开邀请页、
-      填邮箱密码、提交、然后去收验证邮件并点开里面的链接，最后确认账号真的登录上了。
-      默认<b>只建 1 个号</b>，用一次性邮箱，全程不用你管。</p>
-    <label>Profile（第 1 步的产物）</label>
-    <select id="profile"><option value="">— 先探站，或选一个已有的 —</option></select>
-    <div id="profile_meta" class="hint"></div>
-    <div class="row">
-      <div>
-        <label>邮箱<span class="n" style="display:inline"> · 留空则用一次性邮箱</span></label>
-        <input id="run_email" type="text" placeholder="留空 = 自动">
-      </div>
-      <div>
-        <label>密码<span class="n" style="display:inline"> · 留空则自动生成</span></label>
-        <input id="run_password" type="password" placeholder="留空 = 自动">
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>等信超时（秒）</label>
-        <input id="poll_timeout" type="text" value="120">
-      </div>
-    </div>
-    <div class="chk"><input id="run_yes" type="checkbox">
-      <span>我读过第 1 步的提示，可以开始<span class="n">判定允许但带附加条件时，必须勾这个</span></span></div>
-    <div class="chk"><input id="run_wait_link" type="checkbox">
-      <span>用我自己的邮箱，收到信我自己贴链接<span class="n">站点拒一次性邮箱时用这个；只有「贴链接」一步是人工的</span></span></div>
-    <div class="chk"><input id="run_headed" type="checkbox">
-      <span>显示浏览器窗口</span></div>
-    <div class="chk"><input id="run_force" type="checkbox">
-      <span>忽略今天的去重记录<span class="n">同一个邀请码今天已经成功过，才需要勾</span></span></div>
-    <div class="chk"><input id="run_multi" type="checkbox">
-      <span>允许超出邀请配额<span class="n">这是保护不是限制，想清楚再勾</span></span></div>
-    <div style="margin-top:15px"><button id="btn_run">开始建号</button></div>
-    <div id="run_err" class="err"></div>
-  </div>
-
-  <div class="card">
-    <h2>3 · 独立验收</h2>
-    <p class="why">建号脚本说成功<b>不算数</b>。这一步换一个干净会话重新登录，只看服务端怎么回答。
-      只有这里说 verified=true，那个号才算真的能用。</p>
-    <div class="row">
-      <div><label>邮箱</label><input id="ver_email" type="text"></div>
-      <div><label>密码</label><input id="ver_password" type="password"></div>
-    </div>
-    <div style="margin-top:15px"><button id="btn_verify" class="ghost">从干净会话验证</button></div>
-    <div id="ver_err" class="err"></div>
-  </div>
-
-  <div class="card">
-    <h2>进度</h2>
-    <div class="prog-head">
-      <div class="pct"><span id="pct">0</span><small>%</small></div>
-      <div class="stage-now" id="stage_now">空闲</div>
-    </div>
+  <div class="card hidden" id="progress-card">
+    <div class="stage-now" id="stage-now">准备中</div>
+    <div class="stage-sub" id="stage-sub"></div>
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
+    <div class="pct-row"><span id="pct-label">0%</span><span class="pct" id="pct">0%</span></div>
     <div class="steps" id="steps"></div>
-
-    <div id="await_box" class="await" style="display:none">
-      <div class="t2">需要你贴一下验证链接</div>
-      <div class="muted" style="margin-bottom:9px">信已经发到你的邮箱了。打开它，复制里面的验证链接，粘在下面。</div>
-      <div class="row">
-        <input id="link_input" type="text" placeholder="https://.../verify?token=...">
-        <button id="btn_link" style="flex:none">提交链接</button>
-      </div>
-    </div>
-
-    <div id="fail_box" class="fail" style="display:none">
-      <div class="code" id="fail_code"></div>
-      <div class="msg" id="fail_msg"></div>
-      <div class="todo" id="fail_todo"></div>
-      <div class="raw" id="fail_raw"></div>
-    </div>
-
-    <div style="margin-top:15px"><div id="log" class="log">—</div></div>
+    <div class="log hidden" id="log"></div>
   </div>
 
-  <div class="card">
-    <h2>台账</h2>
+  <div class="card hidden" id="result-card"></div>
+
+  <div class="card" id="history-card">
+    <div class="muted" style="margin-bottom:10px">最近的记录</div>
     <table>
-      <thead><tr><th>时间</th><th>站点</th><th>结果</th><th>阶段</th><th>邮箱</th></tr></thead>
-      <tbody id="ledger"><tr><td colspan="5" class="muted">暂无记录</td></tr></tbody>
+      <thead><tr><th>时间</th><th>站点</th><th>结果</th></tr></thead>
+      <tbody id="history"><tr><td colspan="3" class="muted">还没有记录</td></tr></tbody>
     </table>
   </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let currentJob = null, plan = [], planKind = "", lastRefresh = 0;
+
+/* The five steps a person actually sees.  Internal stage names never appear. */
+const STEPS = [
+  { key: "open",     label: "打开邀请链接" },
+  { key: "understand", label: "搞清楚这个站怎么注册" },
+  { key: "submit",   label: "填写并提交注册" },
+  { key: "mail",     label: "等待并确认验证邮件" },
+  { key: "verify",   label: "用干净会话验证账号" },
+  { key: "save",     label: "保存账号" },
+];
+const PCT = { open: 6, understand: 22, submit: 45, mail: 62, verify: 88, save: 97, done: 100 };
+
+let currentJob = null, lastRefresh = 0, failStage = "";
+let lastStageIdx = -1;
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 }
 
-/* ---------- progress ---------- */
-function renderPlan(kind) {
-  planKind = kind;
-  fetch(`/api/plan/${kind}`).then(r => r.json()).then(p => { plan = p; drawSteps("", 0); });
-}
-function drawSteps(currentStage, percent) {
-  const box = $("steps");
-  if (!plan.length) { box.innerHTML = ""; return; }
-  const idx = plan.findIndex(s => s.stage === currentStage);
-  box.innerHTML = plan.map((s, i) => {
+function drawSteps(current, failed) {
+  const idx = STEPS.findIndex(s => s.key === current);
+  const failIdx = failed ? STEPS.findIndex(s => s.key === failed) : -1;
+  $("steps").innerHTML = STEPS.map((s, i) => {
     let cls = "step";
-    if (idx >= 0 && i < idx) cls += " done";
-    else if (idx >= 0 && i === idx) cls += " now";
+    if (failIdx >= 0) {
+      // A failed run has a definite stopping point: everything before it
+      // succeeded, that step failed, everything after it never ran.  Treating
+      // "no current stage" as "all done" (below) turned a failure into a
+      // row of green ticks with one red one in the middle.
+      if (i < failIdx) cls += " done";
+      else if (i === failIdx) cls += " fail";
+    } else if (current === "done" || idx === -1) cls += " done";
+    else if (i < idx) cls += " done";
+    else if (i === idx) cls += " now";
+    const mark = failed && s.key === failed ? "出错了" : "";
     return `<div class="${cls}"><span class="dot"></span><span>${esc(s.label)}</span>` +
-           `<span class="p">${s.percent}%</span></div>`;
+           `<span class="hint">${mark}</span></div>`;
   }).join("");
 }
-function setProgress(percent, stage, label) {
-  $("pct").textContent = percent;
-  $("bar").style.width = percent + "%";
-  $("bar").className = "bar";
-  if (stage) { $("stage_now").textContent = label || stage; drawSteps(stage, percent); }
+
+function setStage(stage, sub) {
+  // Progress must never go backwards.  Two phases can legitimately report
+  // the same coarse step, and a later phase briefly re-entering an earlier
+  // one (the run reopening the page the probe already opened) would make the
+  // bar jump back and look like a restart.
+  const idx = STEPS.findIndex(s => s.key === stage);
+  if (idx >= 0 && idx < lastStageIdx) return;
+  if (idx >= 0) lastStageIdx = idx;
+  const pct = PCT[stage] !== undefined ? PCT[stage] : 0;
+  $("pct").textContent = pct + "%";
+  $("pct-label").textContent = pct + "%";
+  $("bar").style.width = pct + "%";
+  if (sub !== undefined) $("stage-sub").textContent = sub;
+  drawSteps(stage, failStage);
 }
 
-/* ---------- log ---------- */
-function logLine(e) {
+function logLine(text) {
   const box = $("log");
-  if (box.textContent.trim() === "—") box.textContent = "";
-  const t = document.createElement("div");
-  const stamp = e.t !== undefined ? `[${e.t.toFixed(1)}s] ` : "";
-  t.innerHTML = `<span class="t">${stamp}</span>` +
-    `<span class="k-${e.kind}">${esc(e.kind)}</span> ${esc(describe(e))}`;
-  box.appendChild(t);
+  box.classList.remove("hidden");
+  box.textContent += text + "\n";
   box.scrollTop = box.scrollHeight;
 }
-function describe(e) {
-  if (e.kind === "stage") return `${e.stage}${e.message ? " — " + e.message : ""}`;
-  if (e.kind === "waiting") return `已等 ${e.elapsed}s / 共 ${e.total}s，还剩 ${e.remaining}s`;
-  if (e.kind === "substage") return e.message || `${e.done}/${e.total}`;
-  if (e.kind === "verdict") {
-    const v = e.verdict || {};
-    return `[${v.state}] ${(v.reasons || []).join("; ")}`;
-  }
-  if (e.kind === "invite") {
-    const p = e.payload || {};
-    return `邀请码有效=${p.valid} 奖励=${p.rewardCredits}`;
-  }
-  if (e.kind === "identity") return `邮箱 ${e.email}`;
-  if (e.kind === "error") return e.message || "error";
-  if (e.kind === "finished") {
-    const r = e.result || {};
-    return `ok=${r.ok} verified=${r.verified}`;
-  }
-  return e.message || JSON.stringify(e);
-}
 
-/* ---------- failure panel ---------- */
-function showFailure(code, msg, hint, raw) {
-  if (!code) { $("fail_box").style.display = "none"; return; }
-  $("fail_box").style.display = "";
-  $("fail_code").textContent = code;
-  $("fail_msg").textContent = msg || "";
-  $("fail_todo").textContent = hint ? "下一步：" + hint : "";
-  $("fail_raw").textContent = raw || "";
-  $("fail_raw").style.display = raw ? "" : "none";
-}
-
-function setBusy(busy, label) {
-  ["btn_probe","btn_run","btn_verify"].forEach(id => { $(id).disabled = busy; });
-  if (busy && label) $("stage_now").textContent = label;
-  if (!busy && !currentJob) $("stage_now").textContent = "空闲";
-}
-
-function follow(jobId, kind, label) {
-  currentJob = jobId;
+function reset() {
+  lastStageIdx = -1;
+  $("progress-card").classList.remove("hidden");
+  $("result-card").classList.add("hidden");
+  $("result-card").innerHTML = "";
   $("log").textContent = "";
-  $("fail_box").style.display = "none";
-  $("await_box").style.display = "none";
+  $("log").classList.add("hidden");
   $("bar").className = "bar";
-  renderPlan(kind);
-  setBusy(true, label);
+  $("stage-now").textContent = "准备中";
+  $("stage-sub").textContent = "";
+  failStage = "";
+  setStage("open", "");
+}
+
+function finish() {
+  $("go").disabled = false;
+  $("go").textContent = "开始";
+  currentJob = null;
+}
+
+async function poll(jobId) {
+  const r = await fetch(`/api/jobs/${jobId}`);
+  return r.json();
+}
+
+function follow(jobId) {
+  currentJob = jobId;
+  $("go").disabled = true;
+  $("go").textContent = "进行中";
   const es = new EventSource(`/api/jobs/${jobId}/stream`);
   es.onmessage = (ev) => {
     const d = JSON.parse(ev.data);
-    if (d.kind === "_end") { es.close(); finish(jobId); return; }
-    logLine(d);
-    if (d.kind === "stage" || d.kind === "waiting" || d.kind === "substage") {
-      // A bundle scan emits a substage event per bundle; fetching the job on
-      // each one hammered the server.  Coalesce to at most one refresh a
-      // second -- the bar does not need to move faster than that.
-      const now = Date.now();
-      if (!lastRefresh || now - lastRefresh > 900) {
-        lastRefresh = now;
-        fetch(`/api/jobs/${jobId}`).then(r => r.json()).then(j => {
-          setProgress(j.percent, j.stage, j.stage_label);
-          $("await_box").style.display = j.awaiting_link ? "" : "none";
-        });
-      }
+    if (d.kind === "_end") { es.close(); settle(jobId); return; }
+    if (d.kind === "stage") {
+      $("stage-now").textContent = d.message || (STEPS.find(s => s.key === d.stage) || {}).label || "";
+      setStage(d.stage, "");
+      logLine(`[${(d.t||0).toFixed(1)}s] ${d.message || d.stage}`);
+    } else if (d.kind === "substage") {
+      $("stage-sub").textContent = `已检查 ${d.done}/${d.total}`;
+      logLine(`[${(d.t||0).toFixed(1)}s] 检查 ${d.done}/${d.total}`);
+    } else if (d.kind === "waiting") {
+      $("stage-sub").textContent = `等待中，还剩 ${d.remaining} 秒`;
+    } else if (d.kind === "verdict") {
+      logLine(`[${(d.t||0).toFixed(1)}s] 判定：${(d.verdict||{}).state}`);
+    } else if (d.kind === "error") {
+      logLine(`[${(d.t||0).toFixed(1)}s] 错误：${d.message}`);
     }
   };
-  es.onerror = () => { es.close(); finish(jobId); };
+  es.onerror = () => { es.close(); settle(jobId); };
 }
 
-function finish(jobId) {
-  setBusy(false);
-  fetch(`/api/jobs/${jobId}`).then(r => r.json()).then(j => {
-    currentJob = null;
-    if (j.status === "failed") {
-      $("bar").className = "bar fail";
-      showFailure(j.failure_code || "E900", j.error, j.failure_hint, j.error);
-    } else {
-      const r = j.result || {};
-      if (r.verdict) {
-        const v = r.verdict;
-        setProgress(100, "", "");
-        $("bar").className = v.allowed ? "bar done" : "bar fail";
-        const cls = v.allowed ? (v.state === "automatable" ? "ok" : "warn") : "bad";
-        $("stage_now").innerHTML = `<span class="pill ${cls}">${esc(v.state)}</span> ` +
-          esc((v.reasons || []).join("; "));
-        if (r.saved_as) $("stage_now").innerHTML += ` <span class="muted">→ ${esc(r.saved_as)}</span>`;
-        if (!v.allowed) showFailure("E400", (v.reasons||[]).join("; "), v.human_step || "");
-      } else if (r.ok !== undefined) {
-        $("bar").className = r.ok ? "bar done" : "bar fail";
-        setProgress(r.ok ? 100 : j.percent, j.stage, j.stage_label);
-        $("stage_now").innerHTML = `<span class="pill ${r.ok?'ok':'bad'}">ok=${r.ok} verified=${r.verified}</span>`;
-        if (r.email) $("ver_email").value = r.email;
-        if (r.password) $("ver_password").value = r.password;
-        if (!r.ok) {
-          const raw = (r.errors || []).join("\n");
-          showFailure(j.failure_code || "E900", (r.errors||[])[0] || "", j.failure_hint, raw);
-        }
-      } else if (r.verified !== undefined) {
-        $("bar").className = r.verified ? "bar done" : "bar fail";
-        setProgress(100, "", "");
-        $("stage_now").innerHTML = `<span class="pill ${r.verified?'ok':'bad'}">verified=${r.verified}</span>`;
-        if (!r.verified) showFailure("E302", r.reason || "", j.failure_hint,
-          JSON.stringify(r.checks || [], null, 1));
-      }
-    }
-    refreshLedger(); refreshProfiles();
-  });
-}
-
-/* ---------- api ---------- */
-async function post(url, body, errId) {
-  $(errId).textContent = "";
-  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
-                             body: JSON.stringify(body)});
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    let msg = data.error || `HTTP ${r.status}`;
-    if (data.verdict) {
-      msg += "\n" + (data.verdict.reasons || []).join("\n");
-      if (data.verdict.human_step) msg += "\n→ " + data.verdict.human_step;
-    }
-    $(errId).textContent = msg;
-    // Show the same failure panel used mid-run, so a rejection before the job
-    // starts looks like every other failure instead of a bare sentence.
-    showFailure(data.failure_code || "E400", data.error || msg,
-                data.failure_hint || "",
-                data.verdict ? JSON.stringify(data.verdict, null, 1) : "");
-    return null;
+async function settle(jobId) {
+  const j = await poll(jobId);
+  finish();
+  const r = j.result || {};
+  if (r.ok) {
+    $("bar").className = "bar done";
+    setStage("done", "");
+    $("stage-now").textContent = "完成";
+    showSuccess(r);
+  } else if (r.skipped) {
+    // "Already done today" is not a failure: nothing went wrong, the guard
+    // simply refused to create a second account from the same link.
+    $("bar").className = "bar";
+    $("bar").style.width = "100%";
+    $("pct").textContent = "—";
+    $("pct-label").textContent = "已跳过";
+    $("stage-now").textContent = "今天已经做过";
+    $("stage-sub").textContent = "";
+    // Only the steps that actually ran get ticked.  Marking all six as done
+    // implied the account was created and verified, which is the opposite of
+    // what a skip means.
+    drawSteps("submit", "");
+    showSkipped(r);
+  } else {
+    $("bar").className = "bar fail";
+    failStage = mapFailStage(r.stage);
+    drawSteps("", failStage);
+    // Freeze the bar where the run actually stopped, not where the last
+    // event happened to leave it.
+    const stoppedAt = PCT[failStage] !== undefined ? PCT[failStage] : 0;
+    $("bar").style.width = stoppedAt + "%";
+    $("pct").textContent = stoppedAt + "%";
+    $("pct-label").textContent = "已停止";
+    // The result card already says "没有完成" in full; repeating it here
+    // made the page look like two separate errors.
+    $("stage-now").textContent = "已停止";
+    $("stage-sub").textContent = r.reason || "";
+    showFailure(r, j);
   }
-  return data;
+  refreshHistory();
 }
 
-$("btn_probe").onclick = async () => {
-  const d = await post("/api/probe", {
-    invite_url: $("invite_url").value, save_as: $("save_as").value,
-    locale: $("locale").value, headed: $("headed_probe").checked,
-    advance: !$("no_advance").checked, tos_blocks: $("tos_blocks").checked,
-  }, "probe_err");
-  if (d) follow(d.job_id, "probe", "探站中…");
-};
+/* Map a failing internal stage onto the step the user was watching. */
+function mapFailStage(stage) {
+  if (!stage) return "understand";
+  if (stage.startsWith("await")) return "mail";
+  if (stage === "confirm-link") return "mail";
+  if (stage === "confirm" || stage === "state") return "verify";
+  if (stage === "mailbox-rejected" || stage === "mailbox-failed") return "submit";
+  if (stage === "email" || stage === "password" || stage === "submit") return "submit";
+  if (stage === "landing") return "open";
+  return "understand";
+}
 
-$("btn_run").onclick = async () => {
-  const d = await post("/api/run", {
-    profile: $("profile").value, email: $("run_email").value,
-    password: $("run_password").value,
-    poll_timeout: parseInt($("poll_timeout").value || "120", 10),
-    headed: $("run_headed").checked, yes: $("run_yes").checked,
-    force: $("run_force").checked, allow_multi: $("run_multi").checked,
-    wait_link: $("run_wait_link").checked,
-  }, "run_err");
-  if (d) follow(d.job_id, "run", "建号中…");
-};
+function showSuccess(r) {
+  const box = $("result-card");
+  box.classList.remove("hidden");
+  // A null balance means "the site does not expose it to an unauthenticated
+  // probe", not "zero".  Saying "—" made people think the account had no
+  // credits.
+  const credits = (r.credits !== null && r.credits !== undefined)
+    ? r.credits : "未读到（登录后可见）";
+  box.innerHTML = `
+    <div class="ok-box">
+      <div class="t">账号已建好并验证通过</div>
+      <div class="kv">
+        <span class="k">邮箱</span><span class="v">${esc(r.email || "")}</span>
+        <span class="k">密码</span><span class="v">${esc(r.password || "")}</span>
+        <span class="k">额度</span><span class="v">${esc(credits)}</span>
+      </div>
+    </div>`;
+}
 
-$("btn_verify").onclick = async () => {
-  const d = await post("/api/verify", {
-    profile: $("profile").value,
-    email: $("ver_email").value, password: $("ver_password").value,
-  }, "ver_err");
-  if (d) follow(d.job_id, "verify", "验收中…");
-};
+function showSkipped(r) {
+  const box = $("result-card");
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <div class="ok-box" style="border-color:#f0e0c6;background:#fdf8ef">
+      <div class="t" style="color:var(--warn)">今天已经用这个链接成功注册过</div>
+      <div class="why" style="font-size:13.5px;color:#6b5a3b">
+        为防重复建号，这次没有再跑一遍。同一个邀请码每天只建一个号。
+        如果你确实想再建一个，把这段诊断发我。
+      </div>
+      <div class="diag">
+        <div class="diag-head">
+          <span class="lab">诊断</span>
+          <button id="copy-btn">复制</button>
+        </div>
+        <pre id="diag-text">${esc(buildDiagnosis(r, {}))}</pre>
+      </div>
+    </div>`;
+  wireCopy(buildDiagnosis(r, {}));
+}
 
-$("btn_link").onclick = async () => {
-  if (!currentJob) return;
-  const link = $("link_input").value.trim();
-  const r = await fetch(`/api/jobs/${currentJob}/link`, {
-    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({link})
+function wireCopy(text) {
+  $("copy-btn").onclick = async () => {
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) {
+      const pre = $("diag-text");
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      document.execCommand("copy");
+    }
+    const b = $("copy-btn");
+    b.textContent = "已复制"; b.classList.add("copied");
+    setTimeout(() => { b.textContent = "复制"; b.classList.remove("copied"); }, 1800);
+  };
+}
+
+function buildDiagnosis(r, j) {
+  const lines = [
+    "=== invite-signup 诊断 ===",
+    `时间: ${new Date().toISOString()}`,
+    `链接: ${$("url").value}`,
+    `阶段: ${r.stage || ""}`,
+    `错误类型: ${r.failure_kind || j.failure_code || ""}`,
+    `原因: ${r.reason || j.error || ""}`,
+  ];
+  if (r.verdict) lines.push(`判定: ${JSON.stringify(r.verdict)}`);
+  if (r.profile) {
+    const p = r.profile;
+    lines.push(`站点: ${p.site} captcha=${p.captcha} verification=${(p.verification||{}).mode}`);
+    lines.push(`选择器: ${JSON.stringify(p.selectors || {})}`);
+    lines.push(`端点: ${JSON.stringify(p.endpoints || {})}`);
+  }
+  if (r.detail && r.detail.length) {
+    lines.push("", "--- 详细错误 ---", ...r.detail);
+  }
+  if (r.page_text) lines.push("", "--- 页面提示 ---", r.page_text);
+  if (r.trace && r.trace.length) {
+    lines.push("", "--- 请求轨迹 ---", ...r.trace.slice(-25));
+  }
+  if (j && j.failure_hint) lines.push("", `建议: ${j.failure_hint}`);
+  return lines.join("\n");
+}
+
+function showFailure(r, j) {
+  const box = $("result-card");
+  box.classList.remove("hidden");
+  const diag = buildDiagnosis(r, j);
+  box.innerHTML = `
+    <div class="fail-box">
+      <div class="t">没有完成</div>
+      <div class="why">${esc(r.reason || j.error || "未知原因")}</div>
+      <div class="diag">
+        <div class="diag-head">
+          <span class="lab">把下面这段复制发给我，我来修</span>
+          <button id="copy-btn">复制</button>
+        </div>
+        <pre id="diag-text">${esc(diag)}</pre>
+      </div>
+    </div>`;
+  wireCopy(diag);
+}
+
+async function start() {
+  const url = $("url").value.trim();
+  if (!url) { $("url").focus(); return; }
+  reset();
+  const resp = await fetch("/api/flow", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ invite_url: url }),
   });
-  if (r.ok) { $("await_box").style.display = "none"; $("link_input").value = ""; }
-};
-
-/* ---------- lists ---------- */
-async function refreshProfiles() {
-  const rows = await (await fetch("/api/profiles")).json();
-  const sel = $("profile"), keep = sel.value;
-  sel.innerHTML = '<option value="">— 选择一个 profile —</option>';
-  rows.forEach(p => {
-    const o = document.createElement("option");
-    o.value = p.path;
-    o.textContent = `${p.name} · ${p.site}`;
-    sel.appendChild(o);
-  });
-  if (keep) sel.value = keep;
-  updateMeta();
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    $("go").disabled = false;
+    $("bar").className = "bar fail";
+    failStage = "open";
+    drawSteps("", "open");
+    $("stage-now").textContent = "没有开始";
+    showFailure({ reason: data.error || `HTTP ${resp.status}`, trace: [] }, {});
+    return;
+  }
+  follow(data.job_id);
 }
-function updateMeta() {
-  const v = $("profile").value;
-  const opt = [...$("profile").options].find(o => o.value === v);
-  $("profile_meta").textContent = opt && v ? "这个 profile 来自第 1 步的探站结果" : "";
-}
-$("profile").addEventListener("change", updateMeta);
 
-async function refreshLedger() {
+$("go").onclick = start;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") start(); });
+
+async function refreshHistory() {
   const rows = await (await fetch("/api/ledger")).json();
-  const body = $("ledger");
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="5" class="muted">暂无记录</td></tr>'; return;
-  }
-  body.innerHTML = rows.map(r => {
-    const cls = r.outcome === "success" ? "ok" : (r.outcome === "declined" ? "warn" : "bad");
-    return `<tr><td class="muted">${esc((r.started_at||"").replace("T"," "))}</td>` +
-      `<td>${esc(r.site||"")}</td>` +
-      `<td><span class="pill ${cls}">${esc(r.outcome||"")}</span></td>` +
-      `<td class="muted">${esc(r.stage||"")}</td>` +
-      `<td class="muted">${esc(r.email||"—")}</td></tr>`;
+  const body = $("history");
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="3" class="muted">还没有记录</td></tr>'; return; }
+  body.innerHTML = rows.slice(0, 8).map(r => {
+    const kind = r.outcome === "success" ? "ok"
+               : (r.outcome === "skipped" || r.outcome === "declined") ? "warn" : "bad";
+    const label = r.outcome === "success" ? "成功"
+                : r.outcome === "skipped" ? "已跳过"
+                : r.outcome === "declined" ? "未开始" : "失败";
+    const cls = kind;
+    return `<tr><td class="muted">${esc((r.started_at||"").replace("T"," ").slice(5,16))}</td>` +
+           `<td>${esc(r.site||"")}</td>` +
+           `<td><span class="pill ${cls}">${label}</span></td></tr>`;
   }).join("");
 }
 
-refreshProfiles(); refreshLedger(); drawSteps("", 0);
+refreshHistory();
 </script>
 </body>
 </html>

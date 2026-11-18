@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-148%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-163%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -165,6 +165,7 @@ invite-signup/
 │   ├── ledger.py      append-only 台账 + 去重键 + 脱敏
 │   ├── failures.py    失败分类：能不能重试由阶段决定
 │   ├── human.py       拟人输入/点击（不碰任何挑战）
+│   ├── flow.py        一条龙：一个链接 → 探站 → 建号 → 独立验收
 │   ├── progress.py    进度百分比 / 步骤清单 / 稳定错误码
 │   ├── web.py         本机 Web 界面（Flask + SSE，只绑 127.0.0.1）
 │   └── cli.py         命令行入口
@@ -172,7 +173,7 @@ invite-signup/
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记
 ├── examples/          可直接运行的示例
-└── tests/             148 个离线测试
+└── tests/             163 个离线测试
 ```
 
 ---
@@ -195,7 +196,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 148 passed
+python -m pytest tests/ -q          # 163 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 

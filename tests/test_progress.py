@@ -68,3 +68,24 @@ def test_codes_are_unique_per_kind():
 def test_unknown_kind_falls_back_to_a_generic_code():
     assert progress.failure_code("never-heard-of-it") == "E900"
     assert progress.failure_hint("never-heard-of-it")
+
+
+def test_completion_is_representable_as_no_current_stage():
+    """The UI marks every step done when the job finishes.
+
+    That is expressed as "no stage is current" -- an empty stage name, which
+    the checklist resolves to index -1.  A finished job that kept the last
+    real stage as "current" showed 100% next to an unticked final step.
+    """
+    plan = progress.plan("probe")
+    assert plan, "probe plan must not be empty"
+
+    # Nothing in the plan matches "", so a lookup yields -1: all done.
+    assert all(step["stage"] != "" for step in plan)
+
+
+def test_last_stage_starts_below_one_hundred():
+    # 100% must mean "finished", not "started the final step".
+    for kind in ("probe", "run", "verify"):
+        plan = progress.plan(kind)
+        assert plan[-1]["percent"] < 100, kind

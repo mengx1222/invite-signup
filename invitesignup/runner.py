@@ -462,7 +462,15 @@ def _persist(book, profile: SiteProfile, result: RunResult, key: str,
             "invite_code": profile.invite_code,
             "dedupe_key": key,
             "verdict": result.verdict_state,
-            "outcome": "success" if result.ok else "failure",
+            # A skip is neither success nor failure: nothing went wrong, the
+            # duplicate guard simply declined to create a second account.  It
+            # gets its own outcome so the UI and the quota counter can tell
+            # the three apart.
+            "outcome": (
+                "success" if result.ok
+                else "skipped" if result.stage == "skipped-duplicate"
+                else "failure"
+            ),
             "stage": result.stage,
             "email": result.email,
             "verified": result.verified,
