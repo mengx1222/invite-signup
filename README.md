@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-199%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://img.shields.io/badge/tests-208%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -39,7 +39,7 @@
 
 1. **协议笔记要写"坑"，不只写流程** —— 见 [`docs/LESSONS.md`](docs/LESSONS.md) 与 [`docs/PROTOCOL-YILA.md`](docs/PROTOCOL-YILA.md)。
 2. **失败语义要分级**：传输层失败可以重试，**业务拒绝必须整批停**，不换号、不补号。
-3. **离线冒烟测试**：核心逻辑必须能在不联网、不开浏览器的情况下被验证（66 个测试）。
+3. **离线冒烟测试**：核心逻辑必须能在不联网、不开浏览器的情况下被验证。
 
 ### 2026-11-17 第二轮调研：又看了一批同类项目
 
@@ -176,10 +176,21 @@ invite-signup/
 │   └── cli.py         命令行入口
 ├── adapters/          各站点的已验证事实（第一个样本：yila.py）
 ├── profiles/          profile JSON（示例：yila.example.json）
-├── docs/              SOP / 踩坑 / 每站协议笔记
+├── docs/              SOP / 踩坑 / 每站协议笔记 / 外部评审核实记录
 ├── examples/          可直接运行的示例
-└── tests/             199 个离线测试
+└── tests/             208 个离线测试
 ```
+
+---
+
+## 6.5 外部评审怎么被处理的
+
+四份 AI 评审逐条对照代码核实过，不是照单全收：
+[`docs/REVIEW-2026-11-19.md`](docs/REVIEW-2026-11-19.md)。
+
+那份文档同时记录了**不成立**的建议和理由——比如"runner 缺少 verdict 强制校验"其实是误判，
+门禁一直在 `runner.py` 入口；"引入 SQLite"在单任务模型下没有收益。
+采纳与拒绝都写明依据，比单方面接受更有用。
 
 ---
 
@@ -201,7 +212,7 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 199 passed
+python -m pytest tests/ -q          # 208 passed
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
 

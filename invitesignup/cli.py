@@ -131,11 +131,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"[human ] {verdict.human_step}")
         _record_declined(args.output_dir, profile, verdict)
         return 3
-    if args.tos_blocks:
-        verdict = decide(profile, tos_forbids_automation=True)
-        if not verdict.allowed:
-            print(f"[verdict] {verdict.summary()}")
-            return 2
+    # No second decide() here: the call above already passed tos_blocks, so a
+    # repeat could only disagree with itself.
     result = run_registration(
         profile,
         output_dir=args.output_dir,

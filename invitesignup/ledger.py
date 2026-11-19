@@ -41,33 +41,43 @@ _LOCK_REGISTRY_GUARD = threading.Lock()
 # `last_error` holds a request line, `page_text` holds whatever the site
 # printed, and both can contain a verification token or an API key.  The
 # ledger is meant to be shareable when debugging, so scrub the values too.
-_VALUE_PATTERNS = (
+# Each entry pairs a pattern with its replacement.  The first version kept
+# two parallel tuples and dispatched on the pattern's index, so inserting a
+# new rule silently shifted every replacement onto the wrong pattern.
+_VALUE_RULES = (
     # token / key / code as a query parameter
-    re.compile(r"(?i)([?&](?:token|key|api_key|apikey|access_token|code|secret)=)[^&\s\"']+"),
+    (re.compile(r"(?i)([?&](?:token|key|api_key|apikey|access_token|code|secret)=)[^&\s\"']+"),
+     r"\1<redacted>"),
     # common key prefixes
-    re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
+    (re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{12,}\b"), "<redacted>"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "<redacted>"),
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
+     "<redacted>"),
     # bare "password: xxx" in prose
-    re.compile(r"(?i)\b(password|passwd|pwd)\s*[:=]\s*\S+"),
+    (re.compile(r"(?i)\b(password|passwd|pwd)\s*[:=]\s*\S+"), r"\1=<redacted>"),
     # "password was hunter2", "password is hunter2"
-    re.compile(r"(?i)\b(password|passwd|pwd)\b(\s+(?:is|was|:|=)\s+)\S+"),
+    (re.compile(r"(?i)\b(password|passwd|pwd)\b(\s+(?:is|was|:|=)\s+)\S+"),
+     r"\1\2<redacted>"),
 )
 
 
 def scrub_value(value: str) -> str:
     """Remove secrets that appear *inside* a string, not just in its name."""
     out = value
-    for index, pattern in enumerate(_VALUE_PATTERNS):
-        if index == 0:
-            out = pattern.sub(r"\1<redacted>", out)
-        elif index == 4:
-            out = pattern.sub(r"\1=<redacted>", out)
-        elif index == 5:
-            out = pattern.sub(r"\1\2<redacted>", out)
-        else:
-            out = pattern.sub("<redacted>", out)
+    for pattern, replacement in _VALUE_RULES:
+        out = pattern.sub(replacement, out)
     return out
+
+
+def scrub_url(url: str) -> str:
+    """Keep a request line readable while hiding its credentials.
+
+    ``METHOD /api/auth/verify-email?token=<JWT> -> 200`` is the single most
+    useful line when a verification step fails, and it is also a live
+    credential.  Scrubbing the query values keeps the path -- which is what
+    the reader needs -- and drops the part that must never leave the machine.
+    """
+    return scrub_value(url)
 
 
 def dedupe_key(site: str, invite_code: str, day: Optional[str] = None) -> str:

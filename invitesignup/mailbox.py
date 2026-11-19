@@ -335,7 +335,13 @@ class GuerrillaMailProvider(Provider):
                 out.append(Message(id=mid, subject=m.get("mail_subject", "") or ""))
             if not advanced:
                 break
-            seq += len(batch)
+            # guerrillamail's `seq` is the last mail_id already seen, not a
+            # running count.  Incrementing by the batch size walks past gaps
+            # in the id sequence and skips messages -- or stops early.
+            last_id = batch[-1].get("mail_id")
+            if last_id is None:
+                break
+            seq = last_id
         return out
 
     def body(self, message_id: str) -> str:
@@ -996,6 +1002,7 @@ class Mailbox:
         minutes.
         """
         result = PollResult()
+        unmatched: List = []
         if self.provider is None:
             result.errors.append("no mailbox provider")
             return result
@@ -1060,10 +1067,25 @@ class Mailbox:
                         result.payload = chosen
                         result.message = message
                         return result
+                    # Mail arrived but nothing matched the hints.  Remember it
+                    # so a timeout can say so: "no mail arrived" and "mail
+                    # arrived but the link did not look like a verification
+                    # link" need completely different fixes, and reporting the
+                    # first when the second is true sends the reader to the
+                    # wrong place.
+                    if links:
+                        unmatched.append((message, links))
 
             time.sleep(interval)
             interval = min(interval * 1.3, 10.0)
 
+        if unmatched:
+            message, links = unmatched[-1]
+            result.errors.append(
+                f"mail arrived ({message.subject!r}) but none of its "
+                f"{len(links)} link(s) matched the expected hints "
+                f"{list(link_hints)}; first link was {links[0][:120]}"
+            )
         result.errors.extend(self.errors)
         result.dump_path = str(self.dump_path) if self.dump_path else ""
         return result

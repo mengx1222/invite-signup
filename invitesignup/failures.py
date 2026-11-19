@@ -60,6 +60,18 @@ class Classification:
         return f"{self.kind.value}/{self.action.value}: {self.reason}"
 
 
+# The one list of phrases meaning "the site refused this mailbox".  It used
+# to exist twice -- here and again in runner.py -- and the two had already
+# drifted ("邮箱域名" in one, "邮箱" in the other), which is precisely the
+# duplication this project keeps having to remove elsewhere.
+MAILBOX_REJECT_HINTS = (
+    "disposable", "temporary email", "temp mail", "throwaway",
+    "email domain is not allowed", "domain is not allowed", "domain not allowed",
+    "invalid domain", "email domain rejected", "domain rejected",
+    "use a real email", "not accept", "邮箱域名", "临时邮箱", "邮箱",
+)
+
+
 # Substrings that identify each kind.  Order matters: the first match wins,
 # so the more specific patterns come first.
 _SIGNATURES = (
@@ -67,21 +79,23 @@ _SIGNATURES = (
     (Kind.WALLET, ("wallet signature", "solana", "siwe", "no signup form",
                    "no email or password field")),
     (Kind.RATE_LIMIT, ("429", "too many requests", "rate limit")),
-    (Kind.MAILBOX_REJECTED, (
-        "disposable", "temporary email", "temp mail", "throwaway",
-        "email domain is not allowed", "domain not allowed", "invalid domain",
-        "email domain rejected", "domain rejected", "use a real email",
-        "邮箱域名", "临时邮箱",
-    )),
+    (Kind.MAILBOX_REJECTED, MAILBOX_REJECT_HINTS),
+    # "invite code" used to be a SITE_REJECTED needle, so the probe's own
+    # "no invite code was found on this page" -- a *config* finding meaning
+    # "this may not be an invite site" -- classified as "the site refused
+    # you, stop the whole batch".  Different action, opposite advice.
     (Kind.SITE_REJECTED, (
         "user_already_exists", "already exists", "already registered",
-        "invalid invite", "invite code", "not authorized", "forbidden",
-        "403", "terms", "tos", "already has an account", "already registered",
+        "invalid invite", "invite code is invalid", "invite code expired",
+        "invite code not found", "not authorized", "forbidden",
+        "403", "terms", "tos", "already has an account",
     )),
     (Kind.MAIL_TIMEOUT, ("no verification link", "no verification code", "no mail arrived")),
     (Kind.VERIFICATION, ("no session", "sign-in failed", "could not prove")),
     (Kind.CONFIG, ("no email selector", "no password selector", "missing_selectors",
-                   "verification_mode_unknown", "missing_link_pattern")),
+                   "verification_mode_unknown", "missing_link_pattern",
+                   "no invite code was found", "no signup form",
+                   "no email or password field")),
     (Kind.TRANSPORT, (
         "connection", "timeout", "timed out", "getaddrinfo", "dns",
         "ssl", "tls", "reset by peer", "network is unreachable",

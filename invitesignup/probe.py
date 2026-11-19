@@ -952,12 +952,20 @@ def probe(
 
     _emit(on_event, "stage", stage="landing", message=f"fetching {invite_url}")
     try:
-        r = requests.get(invite_url, timeout=timeout, headers={"User-Agent": USER_AGENT},
-                         allow_redirects=True)
+        # Use a Session and read session.cookies, not r.cookies: the latter
+        # holds only the *final* response.  Invite attribution is very often
+        # set by a 302 that plants the cookie before redirecting, so reading
+        # the last hop alone misses the authoritative signal entirely and
+        # leaves attribution to be guessed from HTML -- while the docstring
+        # claims Set-Cookie is the authority.
+        session = requests.Session()
+        r = session.get(invite_url, timeout=timeout,
+                        headers={"User-Agent": USER_AGENT}, allow_redirects=True)
         html = r.text
         findings["landing_status"] = r.status_code
         findings["landing_final_url"] = r.url
-        findings["landing_set_cookie"] = [c.name for c in r.cookies]
+        findings["landing_set_cookie"] = [c.name for c in session.cookies]
+        findings["landing_hops"] = len(r.history) + 1
     except Exception as exc:
         html = ""
         warnings.append(f"landing fetch failed: {type(exc).__name__}: {exc}")

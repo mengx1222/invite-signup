@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import ledger as ledger_mod
 from .failures import Action, classify
 from .human import click_first_enabled_non_google, human_click, human_type, launch_browser
+from .ledger import scrub_url
 from .mailbox import ImapProvider, Mailbox
 from .profile import SiteProfile
 from .verdict import decide
@@ -83,17 +84,27 @@ class RunResult:
 
 def make_password(length: int = 16) -> str:
     """A password that satisfies the usual complexity rules."""
-    import random
+    import secrets
     import string
 
-    lower = random.choice(string.ascii_lowercase)
-    upper = random.choice(string.ascii_uppercase)
-    digit = random.choice(string.digits)
-    sym1 = random.choice("!@#$%&*")
-    sym2 = random.choice("_-=+")
+    # secrets, not random: this is a credential.  `random` is a Mersenne
+    # Twister whose output is recoverable from a handful of observed values,
+    # which is the wrong property for something a site will accept as a
+    # password.
+    lower = secrets.choice(string.ascii_lowercase)
+    upper = secrets.choice(string.ascii_uppercase)
+    digit = secrets.choice(string.digits)
+    sym1 = secrets.choice("!@#$%&*")
+    sym2 = secrets.choice("_-=+")
     pool = string.ascii_letters + string.digits + "!@#$%&*_-=+"
-    chars = [lower, upper, digit, sym1, sym2] + [random.choice(pool) for _ in range(max(0, length - 5))]
-    random.shuffle(chars)
+    chars = [lower, upper, digit, sym1, sym2] + [
+        secrets.choice(pool) for _ in range(max(0, length - 5))
+    ]
+    # Fisher-Yates with secrets, so the guaranteed-character positions are
+    # not predictable either.
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
     return "".join(chars)
 
 
@@ -311,7 +322,16 @@ def _attempt(
 
             def on_response(resp):
                 if "/api/" in resp.url:
-                    result.api_trace.append(f"{resp.request.method} {resp.url} -> {resp.status}")
+                    # The URL is scrubbed here, not later: a verification
+                    # link like /api/auth/verify-email?token=<JWT> is a live
+                    # credential, and this trace is rendered into the
+                    # diagnosis block the operator is told to copy and send
+                    # to someone.  The ledger already scrubbed by value; the
+                    # trace did not, so the one place built for sharing was
+                    # the one place leaking.
+                    result.api_trace.append(
+                        f"{resp.request.method} {scrub_url(resp.url)} -> {resp.status}"
+                    )
 
             page.on("response", on_response)
 
@@ -568,6 +588,12 @@ def _persist(book, profile: SiteProfile, result: RunResult, key: str,
             "page_text": result.page_text[:300],
             "mail_dump": result.mail_dump,
             "last_error": "; ".join(result.errors[-3:]) if result.errors else "",
+            # _classify_outcome says the decision is "visible in the ledger",
+            # and it was not: only prose was written, so a batch driver had to
+            # re-derive the classification from text -- which drifts as the
+            # rules evolve.
+            "failure_kind": result.failure_kind,
+            "failure_action": result.failure_action,
             "notes": result.notes,
         })
     except Exception as exc:  # the ledger must never take the run down with it
@@ -715,11 +741,9 @@ def _in_page_session(page, profile: SiteProfile) -> Optional[Dict[str, Any]]:
 
 # Phrases sites use when they refuse a mailbox.  Matching these early turns a
 # 120-second wait-for-mail into an immediate, actionable failure.
-MAILBOX_REJECT_HINTS = (
-    "disposable", "temporary email", "temp mail", "throwaway",
-    "domain is not allowed", "domain not allowed", "invalid domain",
-    "use a real email", "not accept", "邮箱", "临时邮箱",
-)
+# Re-exported for callers that imported it from here; the definition lives in
+# failures.py so there is exactly one list to maintain.
+from .failures import MAILBOX_REJECT_HINTS  # noqa: E402,F401
 
 
 def _visible_error_text(page, limit: int = 400) -> str:

@@ -662,3 +662,132 @@ def test_a_duplicate_skip_is_not_reported_as_an_unknown_failure():
     assert result.failure_kind == ""
     assert result.failure_action == ""
     assert "nothing was attempted" in result.notes
+
+
+def test_a_query_token_never_reaches_the_shared_diagnosis_block():
+    """The API trace is copied into a "send this to me" block.
+
+    A verification request carries a live token in its query string, so the
+    trace must keep the path (the useful part) and drop the credential.
+    """
+    from invitesignup.ledger import scrub_url
+
+    url = ("https://yila.ai/api/auth/verify-email"
+           "?token=eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6ImEifQ.sig&callbackURL=%2Fresearch")
+    scrubbed = scrub_url(url)
+    assert "verify-email" in scrubbed
+    assert "eyJhbGciOiJIUzI1NiJ9" not in scrubbed
+    assert "<redacted>" in scrubbed
+
+
+def test_scrub_rules_pair_pattern_with_replacement():
+    """The rules used to be two parallel tuples indexed by position, so
+    inserting a new pattern shifted every replacement onto the wrong one."""
+    from invitesignup.ledger import _VALUE_RULES
+
+    for rule in _VALUE_RULES:
+        assert len(rule) == 2, "each rule must carry its own replacement"
+        pattern, replacement = rule
+        assert hasattr(pattern, "sub") and isinstance(replacement, str)
+
+
+def test_an_invite_gate_failure_is_config_not_a_site_refusal():
+    """"no invite code was found" means "this may not be an invite site".
+
+    It used to match the "invite code" needle and come out as
+    site_rejected/abort -- "the site refused you, stop the batch" -- which is
+    both the wrong cause and the wrong next action.
+    """
+    from invitesignup.failures import Action, Kind, classify
+
+    gate = classify("no invite code was found on this page")
+    assert gate.kind is Kind.CONFIG
+    assert gate.action is Action.STOP
+
+    real = classify("invite code is invalid")
+    assert real.kind is Kind.SITE_REJECTED
+    assert real.action is Action.ABORT_BATCH
+
+
+def test_the_mailbox_rejection_vocabulary_has_one_home():
+    """Two copies had already drifted apart; runner.py now re-exports."""
+    from invitesignup import failures, runner
+
+    assert runner.MAILBOX_REJECT_HINTS is failures.MAILBOX_REJECT_HINTS
+
+
+def test_the_ledger_records_the_classification_it_promises():
+    """_classify_outcome says the decision is visible in the ledger.
+
+    It was not: only prose was written, so a batch driver had to re-derive
+    the classification from text and could disagree with what actually
+    happened.
+    """
+    import inspect
+
+    from invitesignup import runner
+
+    source = inspect.getsource(runner._persist)
+    assert '"failure_kind"' in source
+    assert '"failure_action"' in source
+
+
+def test_generated_passwords_satisfy_the_complexity_rules():
+    """Behavioural check: whatever the generator uses, every password it
+    emits must carry one of each required class and be long enough."""
+    import string
+
+    from invitesignup.runner import make_password
+
+    seen = set()
+    for _ in range(200):
+        pw = make_password()
+        assert len(pw) == 16
+        assert any(c.islower() for c in pw)
+        assert any(c.isupper() for c in pw)
+        assert any(c.isdigit() for c in pw)
+        assert any(c in "!@#$%&*_-=+" for c in pw)
+        assert all(c in string.ascii_letters + string.digits + "!@#$%&*_-=+" for c in pw)
+        seen.add(pw)
+    # A generator that returned a constant would pass the checks above.
+    assert len(seen) == 200, "passwords are not varying"
+
+
+def test_the_version_matches_pyproject():
+    import re
+    from pathlib import Path
+
+    import invitesignup
+
+    text = (Path(invitesignup.__file__).resolve().parent.parent / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    declared = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+    assert invitesignup.__version__ == declared
+
+
+def test_an_old_profile_with_unknown_nested_keys_still_loads():
+    """The outer dataclass filtered unknown keys and the nested ones did not,
+    so a profile written by an older schema raised TypeError at load time."""
+    from invitesignup.profile import SiteProfile
+
+    data = SiteProfile(site="example.test", base_url="https://example.test").to_dict()
+    data["attribution"]["expires"] = "2020-01-01"
+    data["verification"]["legacy_field"] = 1
+    restored = SiteProfile.from_dict(data)
+    assert restored.site == "example.test"
+
+
+def test_guerrillamail_paging_uses_the_last_id_not_a_count():
+    """`seq` is the last mail_id seen, not a running total.
+
+    Adding the batch size walks past gaps in the id sequence and skips
+    messages, which reads as "no verification link arrived".
+    """
+    import inspect
+
+    from invitesignup import mailbox
+
+    source = inspect.getsource(mailbox.GuerrillaMailProvider.messages)
+    assert "seq += len(batch)" not in source
+    assert 'last_id = batch[-1].get("mail_id")' in source

@@ -27,6 +27,12 @@ from urllib.parse import urlsplit
 # silently misread.
 SCHEMA_VERSION = 2
 
+
+def _only_known(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop keys the dataclass does not declare, so old profiles still load."""
+    known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
+    return {k: v for k, v in (data or {}).items() if k in known}
+
 # --- selector stability -------------------------------------------------
 # A selector is "stable" if it survives a redesign of the surrounding chrome.
 SELECTOR_STABILITY = {
@@ -153,6 +159,13 @@ class SiteProfile:
         verification = data.pop("verification", None) or {}
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         data = {k: v for k, v in data.items() if k in known}
+        # The nested structures need the same filtering as the outer one.
+        # Without it, a hand-edited profile carrying a field from an older
+        # schema (say ``attribution.expires``) raised TypeError at load time
+        # -- the outer class tolerated unknown keys and the inner ones did
+        # not, which is an inconsistency nobody expects.
+        attribution = _only_known(Attribution, attribution)
+        verification = _only_known(Verification, verification)
         profile = cls(
             attribution=Attribution(**attribution),
             verification=Verification(**verification),
