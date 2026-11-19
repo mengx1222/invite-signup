@@ -96,13 +96,25 @@ def launch_browser(playwright, *, headless: bool = True):
     Three call sites used to carry their own copy of these flags.  Changing a
     flag in one place and missing the other two is the kind of drift that only
     shows up as an unexplained behavioural difference between probe and run.
+
+    Prefer the locally installed Chrome, but fall back to Playwright's bundled
+    Chromium.  README tells new users that `playwright install chromium` is
+    enough; without the fallback that setup document was a trap on any machine
+    without Google Chrome.  The browser test already did this fallback, so
+    CI stayed green while the product path would not start.
     """
-    return playwright.chromium.launch(
-        channel="chrome",
-        headless=headless,
-        args=list(LAUNCH_ARGS),
-        ignore_default_args=list(IGNORE_DEFAULT_ARGS),
-    )
+    launch_kwargs = {
+        "headless": headless,
+        "args": list(LAUNCH_ARGS),
+        "ignore_default_args": list(IGNORE_DEFAULT_ARGS),
+    }
+    try:
+        return playwright.chromium.launch(channel="chrome", **launch_kwargs)
+    except Exception:
+        # If Chrome is absent, use the browser Playwright actually installed.
+        # Do not inspect the exception text: launch failures have many messages
+        # and the fallback is safe even when Chrome failed for another reason.
+        return playwright.chromium.launch(**launch_kwargs)
 
 
 def apply_environment_consistency(context) -> None:

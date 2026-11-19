@@ -986,3 +986,73 @@ def test_a_mismatched_account_makes_the_report_unverified(monkeypatch):
     assert report.verified is False, "a session for another account must not verify"
     assert report.reason == "signed in as a different account"
     assert any(c["name"] == "identity" and not c["ok"] for c in report.checks)
+
+
+def test_verification_without_a_session_endpoint_cannot_pass(monkeypatch):
+    """A state endpoint 200 only proves *some* credentials worked.
+
+    Marking identity as "not checkable but ok" let any working account pass as
+    verified on sites where the session endpoint was not found by the probe,
+    which is common because it may only load after login.
+    """
+    from invitesignup import verify
+    from invitesignup.profile import SiteProfile
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"balance": 42}
+
+    class Session:
+        headers = {}
+
+        def post(self, *a, **k):
+            return Resp()
+
+        def get(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(verify.requests, "Session", lambda: Session())
+
+    profile = SiteProfile(site="x.test", base_url="https://x.test")
+    report = verify.verify_account(
+        profile, "target@x.test", "pw",
+        sign_in_endpoint="/api/auth/sign-in/email",
+        session_endpoint="",
+        state_endpoints={"credits": "/api/credits"},
+    )
+
+    assert report.verified is False
+    assert any(c["name"] == "identity" and not c["ok"] for c in report.checks)
+    assert "session endpoint" in report.reason
+
+
+def test_launch_browser_falls_back_when_chrome_is_absent():
+    """README says chromium is enough, and CI proves only chromium is installed.
+
+    The product path used channel="chrome" with no fallback, so that setup was
+    a trap on machines without Google Chrome.
+    """
+    from invitesignup.human import launch_browser
+
+    calls = []
+
+    class Chromium:
+        def launch(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("channel") == "chrome":
+                raise RuntimeError("chrome not installed")
+            return "browser"
+
+    class Playwright:
+        chromium = Chromium()
+
+    assert launch_browser(Playwright(), headless=True) == "browser"
+    assert calls[0].get("channel") == "chrome"
+    assert "channel" not in calls[1]
+    assert calls[0]["headless"] is True
+    assert calls[1]["headless"] is True

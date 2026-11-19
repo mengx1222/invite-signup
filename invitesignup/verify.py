@@ -181,18 +181,19 @@ def verify_account(profile, email: str, password: str,
             report.reason = "no session"
             return report
     else:
-        # No session endpoint in the profile.  A state endpoint returning 200
-        # proves the credentials work, which is what verification is for --
-        # but say so plainly rather than implying a session was read.
+        # No session endpoint means there is no user object to compare.  A
+        # state endpoint returning 200 only proves *some* credentials work;
+        # marking identity as ok here let any working account pass as
+        # verified, which defeats the point of this module.
         report.add("session", True, "no session endpoint in profile; relying on state endpoints")
-        # Identity cannot be compared without a user object.  Record that
-        # explicitly: a verification that could not check the account is
-        # weaker than one that did, and the report should not blur the two.
         report.add(
-            "identity", True,
-            "not checkable: the profile has no session endpoint, so the "
-            "signed-in account cannot be compared",
+            "identity", False,
+            "identity not checkable: the profile has no session endpoint, so "
+            "the signed-in account cannot be compared; add "
+            "endpoints.session to prove this account",
         )
+        report.reason = "identity cannot be verified without a session endpoint"
+        return report
 
     for label, path in (state_endpoints or {}).items():
         try:
