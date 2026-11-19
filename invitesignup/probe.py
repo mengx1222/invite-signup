@@ -806,6 +806,24 @@ def infer_selectors(dom: DomInfo) -> Dict[str, str]:
     elif len(passwords) == 1:
         out["password"] = prefer(passwords[0]) or 'input[type="password"]'
 
+    # An OTP field is often labelled only by its attributes, not by a <label>.
+    # Relying on labels alone left `infer_steps` saying "there is an otp step"
+    # (it calls this function and looks for the key) while this function never
+    # produced the key -- a contradiction that made a code-based site look
+    # automatable with no field to type into.
+    otp_el = next(
+        (
+            el
+            for el in dom.inputs
+            if "otp" in (el.get("id") or "").lower()
+            or "code" in (el.get("id") or "").lower()
+            or (el.get("name") or "").lower() in ("otp", "code", "verification_code")
+        ),
+        None,
+    )
+    if otp_el is not None:
+        out.setdefault("otp", prefer(otp_el) or 'input[name="code"]')
+
     for label in dom.labels:
         text = (label.get("text") or "").lower()
         target = label.get("for")

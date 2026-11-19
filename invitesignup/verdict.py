@@ -204,6 +204,20 @@ def decide(profile: SiteProfile, tos_forbids_automation: bool = False) -> Verdic
         v.reasons.append("verification is code-based but no extraction pattern is known")
         return v
 
+    if profile.verification.mode == "code" and not profile.selectors.get("otp"):
+        # A code with nowhere to type it is not automatable.  The runner used
+        # to skip the entry step silently and then report "no session after
+        # the flow", blaming the site for a gap in the profile.  The decision
+        # layer and the executor have to agree on what "possible" means.
+        v.state = BLOCKED_FACTS
+        v.blockers.append("missing_selectors:otp")
+        v.reasons.append(
+            "verification is code-based but the profile has no 'otp' field to "
+            "type the code into"
+        )
+        v.human_step = "re-probe with advance=True, or add selectors.otp by hand"
+        return v
+
     if profile.verification.mode == "link" and not profile.verification.pattern:
         v.state = BLOCKED_FACTS
         v.blockers.append("missing_link_pattern")

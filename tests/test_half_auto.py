@@ -791,3 +791,128 @@ def test_guerrillamail_paging_uses_the_last_id_not_a_count():
     source = inspect.getsource(mailbox.GuerrillaMailProvider.messages)
     assert "seq += len(batch)" not in source
     assert 'last_id = batch[-1].get("mail_id")' in source
+
+
+def test_an_otp_field_is_found_without_a_label():
+    """`infer_steps` asks infer_selectors for an "otp" key.
+
+    That key was only produced when a <label> pointed at the field, so a code
+    input labelled purely by its attributes made infer_steps report an otp
+    step while infer_selectors returned no otp selector -- the two disagreed
+    about the same page.
+    """
+    from invitesignup.probe import DomInfo, infer_selectors, infer_steps
+
+    by_id = DomInfo(inputs=[{"type": "email", "id": "email"},
+                            {"type": "text", "id": "otp-code"}], url="https://x.test/v")
+    assert infer_selectors(by_id)["otp"] == "#otp-code"
+    assert "otp" in infer_steps(by_id)
+
+    by_name = DomInfo(inputs=[{"type": "email", "id": "email"},
+                              {"type": "text", "name": "code"}], url="https://x.test/v")
+    assert infer_selectors(by_name)["otp"] == 'input[name="code"]'
+    assert "otp" in infer_steps(by_name)
+
+
+def test_a_page_without_a_code_field_gets_no_otp_selector():
+    from invitesignup.probe import DomInfo, infer_selectors, infer_steps
+
+    plain = DomInfo(inputs=[{"type": "email", "id": "email"}], url="https://x.test/v")
+    assert "otp" not in infer_selectors(plain)
+    assert "otp" not in infer_steps(plain)
+
+
+def test_a_code_site_with_no_otp_selector_is_blocked_not_attempted():
+    """The verdict said automatable while the runner had nowhere to type.
+
+    The runner then skipped the entry step silently and reported "no session
+    after the flow" -- blaming the site for a gap in the profile.
+    """
+    from invitesignup.profile import SiteProfile
+    from invitesignup.verdict import BLOCKED_FACTS, decide
+
+    p = SiteProfile(site="x.test", base_url="https://x.test",
+                    invite_code="C", invite_valid=True, captcha="none")
+    p.verification.mode = "code"
+    p.verification.pattern = r"\b\d{6}\b"
+    p.selectors = {"email": "input[type=email]", "submit": "button[type=submit]"}
+
+    v = decide(p)
+    assert v.state == BLOCKED_FACTS
+    assert any("otp" in b for b in v.blockers)
+    assert not v.allowed
+
+    p.selectors["otp"] = "input[name=code]"
+    assert decide(p).allowed
+
+
+def test_a_code_profile_without_an_otp_field_stops_before_the_browser(monkeypatch):
+    """The real guarantee: the run stops with a clear reason and no side effect.
+
+    The verdict blocks this profile at the top of _attempt, so the check
+    inside the code branch is defence in depth rather than the thing that
+    fires.  What matters, and what this asserts, is that the run never reaches
+    the browser and the error names the missing field instead of blaming the
+    site with "no session after the flow".
+    """
+    import pathlib
+    import sys as _sys
+    import tempfile
+    import types as _types
+
+    from invitesignup import runner
+    from invitesignup.profile import SiteProfile
+
+    touched = []
+
+    class StubPage:
+        url = "https://x.test/verify"
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def screenshot(self, path=None):
+            pass
+
+        def locator(self, *a, **k):
+            touched.append(a)
+            raise AssertionError("locator touched")
+
+    class StubBrowser:
+        def new_context(self, **kw):
+            touched.append("context")
+            return _types.SimpleNamespace(new_page=lambda: StubPage())
+
+        def close(self):
+            pass
+
+    class StubPW:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake_api = _types.ModuleType("playwright.sync_api")
+    fake_api.sync_playwright = lambda: StubPW()
+    monkeypatch.setitem(_sys.modules, "playwright.sync_api", fake_api)
+    monkeypatch.setattr(runner, "launch_browser", lambda *a, **k: StubBrowser())
+
+    profile = SiteProfile(site="x.test", base_url="https://x.test",
+                          invite_code="C", invite_valid=True, captcha="none")
+    profile.verification.mode = "code"
+    profile.verification.pattern = r"\b\d{6}\b"
+    profile.selectors = {"email": "input[type=email]", "submit": "button"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = runner._attempt(
+            profile, out=pathlib.Path(tmp), key="k", book=None, email=None,
+            password=None, inbox_password=None, allow_multi=False, force=True,
+            headless=True, tos_forbids_automation=False, poll_timeout=5,
+        )
+
+    assert result.ok is False
+    assert any("otp" in e.lower() for e in result.errors), result.errors
+    assert not any("no session" in e for e in result.errors), result.errors
+    # Nothing was launched: the decision happened before any side effect.
+    assert touched == [], touched

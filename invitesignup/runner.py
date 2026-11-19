@@ -487,12 +487,23 @@ def _attempt(
                     result.errors.append("no verification code arrived: " + "; ".join(poll.errors[-3:]))
                     return result
                 otp_selector = profile.selectors.get("otp")
-                if otp_selector:
-                    human_type(page, otp_selector, poll.payload)
-                    submit_selector = profile.selectors.get("submit")
-                    if submit_selector:
-                        human_click(page, submit_selector)
-                    page.wait_for_timeout(2500)
+                if not otp_selector:
+                    # Without a field to type into, the code is useless.  The
+                    # old code skipped this silently and fell through to the
+                    # session check, which reported "no session after the
+                    # flow" -- pointing at the site instead of at the missing
+                    # selector.  Stop here and say what is actually wrong.
+                    result.errors.append(
+                        "verification is code-based but the profile has no "
+                        "'otp' selector, so the code cannot be entered; "
+                        "re-probe with advance=True or add selectors.otp"
+                    )
+                    return result
+                human_type(page, otp_selector, poll.payload)
+                submit_selector = profile.selectors.get("submit")
+                if submit_selector:
+                    human_click(page, submit_selector)
+                page.wait_for_timeout(2500)
 
             # --- confirm ---
             result.stage = "confirm"
