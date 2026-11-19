@@ -107,9 +107,22 @@ def test_traffic_log_survives_a_malformed_url():
 
 
 def test_provider_registry_is_extensible():
-    # The three built-ins must be registered, in the documented order.
-    assert available_providers()[:3] == ["mail.tm", "tempmail.io", "guerrillamail"]
-    assert set(available_providers()[:3]) <= set(PROVIDERS)
+    # mail.cx leads because choosing a name is the whole creation step, so an
+    # address costs nothing to obtain.  The rest are fallbacks.
+    assert available_providers()[0] == "mail.cx"
+    for name in ("mail.tm", "tempmail.io", "guerrillamail"):
+        assert name in available_providers()
+    assert set(available_providers()[:4]) <= set(PROVIDERS)
+
+
+def test_imap_is_never_auto_created():
+    """imap needs credentials the operator supplies, so it cannot be reached
+    by the automatic failover chain -- a run that silently tried it would
+    fail for a reason the user never chose."""
+    from invitesignup.mailbox import DEFAULT_ORDER
+
+    assert "imap" not in DEFAULT_ORDER
+    assert "imap" in available_providers()
 
 
 def test_registering_a_custom_provider_adds_it():

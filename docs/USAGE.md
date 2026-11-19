@@ -121,10 +121,16 @@ python -m invitesignup ledger
 `mail.cx` 是第一个「不需要创建」的邮箱：**地址本身就是邮箱**，邮件一到就开始缓存。
 所以拿一个地址的成本是一串字符，不是一次 API 调用——这才让邮箱池有意义。
 
-在 profile 里写一行，之后 `run` 就用它，地址自动生成：
+**它已经是默认首选**，什么都不用配，`run` 直接用：
+
+```
+mail.cx  →  mail.tm  →  tempmail.io  →  guerrillamail
+```
+
+前一个失败自动降级到下一个。要换顺序，在 profile 里写：
 
 ```json
-{ "mailbox_prefer": ["mail.cx"] }
+{ "mailbox_prefer": ["mail.tm", "mail.cx"] }
 ```
 
 想自己指定地址，直接写进去：

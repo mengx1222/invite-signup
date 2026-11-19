@@ -791,7 +791,7 @@ PROVIDERS: Dict[str, type] = {}
 def register_provider(name: str):
     """Decorator that adds a provider class to the registry.
 
-    The three built-in providers register themselves below.  A caller with a
+    The built-in providers register themselves below.  A caller with a
     private inbox (IMAP, a corporate relay) can add one without touching this
     module: subclass :class:`Provider` and decorate it.
     """
@@ -808,7 +808,15 @@ register_provider("mail.tm")(MailTmProvider)
 register_provider("tempmail.io")(TempMailIoProvider)
 register_provider("guerrillamail")(GuerrillaMailProvider)
 
-DEFAULT_ORDER = ("mail.tm", "tempmail.io", "guerrillamail")
+# mail.cx leads because choosing a name is the whole creation step: no
+# signup, no token, no per-mailbox request, so a run costs nothing to get an
+# address.  The rest stay as fallbacks -- if mail.cx is down or a site
+# blacklists its domains, the run should still have somewhere to go rather
+# than failing on one provider.
+#
+# imap is deliberately absent: it needs credentials the operator supplies, so
+# it can never be "auto-created" and must be requested by name.
+DEFAULT_ORDER = ("mail.cx", "mail.tm", "tempmail.io", "guerrillamail")
 
 
 def available_providers() -> List[str]:

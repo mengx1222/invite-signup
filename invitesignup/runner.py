@@ -165,6 +165,15 @@ def _classify_outcome(result: RunResult) -> None:
         result.failure_kind = ""
         result.failure_action = ""
         return
+    # A skip is not a failure: the duplicate guard refused to create a second
+    # account, and nothing went wrong.  Leaving it unclassified made a batch
+    # driver read "unknown / stop" and treat a healthy skip as an incident.
+    if result.stage == "skipped-duplicate":
+        result.failure_kind = ""
+        result.failure_action = ""
+        if not result.notes:
+            result.notes = "already done today; nothing was attempted"
+        return
     # "Already registered" is a business refusal: the account exists, so a
     # retry cannot succeed and must not create a second one.
     if result.stage == "already-registered":

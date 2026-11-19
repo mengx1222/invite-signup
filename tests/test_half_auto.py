@@ -645,3 +645,20 @@ def test_a_preview_is_never_mistaken_for_the_body():
         assert msgs[0].body == "", "the preview must not masquerade as the body"
     finally:
         mb.requests = original
+
+
+def test_a_duplicate_skip_is_not_reported_as_an_unknown_failure():
+    """Nothing went wrong when the dedupe guard fires.
+
+    It used to come out as `unknown` / `stop` with the note "unclassified
+    failure; do not retry blindly", which reads as an incident and would make
+    a batch driver stop on a perfectly healthy skip.
+    """
+    from invitesignup.runner import RunResult, _classify_outcome
+
+    result = RunResult(stage="skipped-duplicate",
+                       errors=["dedupe: already completed"])
+    _classify_outcome(result)
+    assert result.failure_kind == ""
+    assert result.failure_action == ""
+    assert "nothing was attempted" in result.notes
