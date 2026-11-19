@@ -92,6 +92,26 @@ def sign_in(base_url: str, email: str, password: str,
     return session
 
 
+def _identity_matches(session_user: Optional[Dict[str, Any]], expected: str) -> tuple:
+    """Does the signed-in user match the account we meant to verify?
+
+    Returns ``(ok, detail)``.  When the site does not expose an address at all
+    we cannot compare, and saying so is better than claiming a match -- but it
+    must not silently count as a pass either.
+    """
+    if not isinstance(session_user, dict):
+        return False, "no user object to compare"
+    actual = session_user.get("email") or session_user.get("emailAddress") or ""
+    if not actual:
+        return False, (
+            "the session carries no email address, so the signed-in account "
+            "cannot be matched against the one this run created"
+        )
+    if str(actual).strip().lower() != (expected or "").strip().lower():
+        return False, f"signed in as {actual}, expected {expected}"
+    return True, f"session belongs to {actual}"
+
+
 def fetch_json(session: requests.Session, url: str, timeout: int = 20) -> Any:
     resp = session.get(url, timeout=timeout)
     resp.raise_for_status()
@@ -145,6 +165,17 @@ def verify_account(profile, email: str, password: str,
                 report.add("session", False, "no user in the session payload")
                 report.reason = "no session"
                 return report
+
+            # A session proves *someone* signed in.  It does not prove it was
+            # the account this run created: a reused password, a shared
+            # mailbox, or a site that silently falls back to another account
+            # would all pass otherwise.  The whole point of verification is
+            # that it cannot be satisfied by the wrong account.
+            identity_ok, identity_detail = _identity_matches(report.session, email)
+            report.add("identity", identity_ok, identity_detail)
+            if not identity_ok:
+                report.reason = "signed in as a different account"
+                return report
         except Exception as exc:
             report.add("session", False, f"{type(exc).__name__}: {exc}")
             report.reason = "no session"
@@ -154,6 +185,14 @@ def verify_account(profile, email: str, password: str,
         # proves the credentials work, which is what verification is for --
         # but say so plainly rather than implying a session was read.
         report.add("session", True, "no session endpoint in profile; relying on state endpoints")
+        # Identity cannot be compared without a user object.  Record that
+        # explicitly: a verification that could not check the account is
+        # weaker than one that did, and the report should not blur the two.
+        report.add(
+            "identity", True,
+            "not checkable: the profile has no session endpoint, so the "
+            "signed-in account cannot be compared",
+        )
 
     for label, path in (state_endpoints or {}).items():
         try:
@@ -163,8 +202,13 @@ def verify_account(profile, email: str, password: str,
         except Exception as exc:
             report.add(f"state:{label}", False, f"{type(exc).__name__}: {exc}")
 
-    report.verified = all(c["ok"] for c in report.checks if c["name"] == "sign-in") and \
-        any(c["ok"] for c in report.checks if c["name"] == "session")
+    # Identity is required, not optional: without it a verification can be
+    # satisfied by any working account on the site.
+    report.verified = (
+        all(c["ok"] for c in report.checks if c["name"] == "sign-in")
+        and any(c["ok"] for c in report.checks if c["name"] == "session")
+        and all(c["ok"] for c in report.checks if c["name"] == "identity")
+    )
     if not report.verified:
         report.reason = report.reason or "verification did not pass"
     return report

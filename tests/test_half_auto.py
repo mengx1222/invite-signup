@@ -916,3 +916,73 @@ def test_a_code_profile_without_an_otp_field_stops_before_the_browser(monkeypatc
     assert not any("no session" in e for e in result.errors), result.errors
     # Nothing was launched: the decision happened before any side effect.
     assert touched == [], touched
+
+
+def test_verification_rejects_a_session_for_a_different_account():
+    """A session proves *someone* signed in, not that it was this account.
+
+    Without this check a reused password, a shared mailbox, or a site that
+    falls back to another account would all be reported as verified -- which
+    defeats the one guarantee this module exists for.
+    """
+    from invitesignup.verify import _identity_matches
+
+    ok, detail = _identity_matches({"email": "target@x.test"}, "target@x.test")
+    assert ok, detail
+
+    ok, detail = _identity_matches({"email": "Target@X.Test"}, "target@x.test")
+    assert ok, "comparison must be case-insensitive"
+
+    ok, detail = _identity_matches({"email": "other@x.test"}, "target@x.test")
+    assert not ok
+    assert "other@x.test" in detail
+
+
+def test_verification_refuses_to_guess_identity_it_cannot_see():
+    """No email in the session means it cannot be compared -- say so rather
+    than silently counting as a pass."""
+    from invitesignup.verify import _identity_matches
+
+    ok, detail = _identity_matches({"id": "123"}, "target@x.test")
+    assert not ok
+    assert "cannot be matched" in detail
+
+    ok, detail = _identity_matches(None, "target@x.test")
+    assert not ok
+
+
+def test_a_mismatched_account_makes_the_report_unverified(monkeypatch):
+    """End to end through verify_account with HTTP stubbed out."""
+    from invitesignup import verify
+    from invitesignup.profile import SiteProfile
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"user": {"email": "someone-else@x.test", "emailVerified": True}}
+
+    class Session:
+        headers = {}
+
+        def post(self, *a, **k):
+            return Resp()
+
+        def get(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(verify.requests, "Session", lambda: Session())
+
+    profile = SiteProfile(site="x.test", base_url="https://x.test")
+    report = verify.verify_account(
+        profile, "target@x.test", "pw",
+        sign_in_endpoint="/api/auth/sign-in/email",
+        session_endpoint="/api/auth/get-session",
+    )
+
+    assert report.verified is False, "a session for another account must not verify"
+    assert report.reason == "signed in as a different account"
+    assert any(c["name"] == "identity" and not c["ok"] for c in report.checks)
