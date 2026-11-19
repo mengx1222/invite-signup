@@ -3,7 +3,7 @@
 > **邀请制站点注册流水线的标准作业流程（SOP）与实现。**
 > 探站 → 判定 → 生成 → 执行 → 独立验收。站点无关，一次搭好，之后每个邀请制平台只填一份 profile。
 
-[![tests](https://img.shields.io/badge/tests-208%20passed-brightgreen)](https://github.com/mengx1222/invite-signup)
+[![tests](https://github.com/mengx1222/invite-signup/actions/workflows/tests.yml/badge.svg)](https://github.com/mengx1222/invite-signup/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-22272e)](LICENSE)
 
@@ -178,7 +178,7 @@ invite-signup/
 ├── profiles/          profile JSON（示例：yila.example.json）
 ├── docs/              SOP / 踩坑 / 每站协议笔记 / 外部评审核实记录
 ├── examples/          可直接运行的示例
-└── tests/             208 个离线测试
+└── tests/             离线测试（数量以 CI 实际运行为准）
 ```
 
 ---
@@ -212,9 +212,28 @@ invite-signup/
 ## 8. 测试
 
 ```bash
-python -m pytest tests/ -q          # 208 passed
+python -m pytest tests/ -q          # 全部离线，不开浏览器、不联网
 python tests/test_mailbox.py         # 也可以单文件离线跑，不需要 pytest
 ```
+
+### CI 跑什么
+
+`.github/workflows/tests.yml` 分两个 job，按**真实依赖**切分而不是按目录：
+
+| job | 内容 | 为什么分开 |
+| :--- | :--- | :--- |
+| `offline` | Python 3.10 / 3.12 / 3.13；lint + 版本一致性 + 203 个测试 | 不下载浏览器，几十秒出结果 |
+| `browser` | 装 Chromium，跑 5 个验证码可见性测试 | 需要真实布局语义 |
+
+分开的理由是**故障归因**：浏览器下载失败和逻辑测试失败是两种问题、两种修法。
+放在同一个 job 里，前者会遮住后者。
+
+lint 只开 `F`（未定义/未使用名字）和 `E9`（语法错误）两族。`--select ALL` 在这个仓库报 422 条，
+绝大多数是 `Dict` → `dict` 这类语法现代化——改遍所有文件、零行为收益。一次性全开的结果是
+第一次 CI 就红、然后所有人学会忽略它。放宽是独立的一次改动。
+
+版本一致性单独查一次：`__version__` 和 `pyproject.toml` 曾经漂移过（0.1.0 vs 0.2.0），
+与其指望下次记得改两处，不如让 CI 守住这个不变量。
 
 所有测试**不联网、不开浏览器**。
 
