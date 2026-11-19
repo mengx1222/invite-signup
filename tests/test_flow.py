@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from invitesignup import flow  # noqa: E402
-from invitesignup.profile import SiteProfile  # noqa: E402
 from invitesignup.verdict import Verdict  # noqa: E402
 
 

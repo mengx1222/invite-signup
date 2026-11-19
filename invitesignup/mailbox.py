@@ -22,7 +22,6 @@ way on a live site:
 from __future__ import annotations
 
 import imaplib
-import json
 import random
 import re
 import socket

@@ -878,7 +878,6 @@ def infer_verification(scan: Dict[str, Any], dom: DomInfo,
         sample = verify_paths[0] if verify_paths else samples[0]
         # Derive a default pattern from the endpoint we actually observed, so
         # the verdict has something to match the incoming mail against.
-        tail = sample.split("/")[-1]
         pattern = r"https?://[^\s\"'<>\\]*" + re.escape(sample) + r"[^\s\"'<>\\]*"
         return {
             "mode": "link",

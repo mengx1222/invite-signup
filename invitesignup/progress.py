@@ -17,7 +17,7 @@ an approximation; this one says so.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 # (stage, human label, weight)
 Stage = Tuple[str, str, int]

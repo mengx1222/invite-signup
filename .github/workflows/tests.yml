@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The suite is offline by design, so this needs no secrets and no network
+# beyond installing dependencies.  A workflow that required credentials
+# would simply never be run.
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: offline suite (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          # web and dev extras only: playwright's browser download is skipped
+          # deliberately, because the offline suite never launches one.
+          pip install -e ".[web,dev]"
+          pip install ruff
+
+      - name: lint
+        run: ruff check invitesignup tests
+
+      - name: version is a single source of truth
+        run: python tests/check_version.py
+
+      - name: offline tests
+        run: |
+          # test_live_captcha needs a real browser and is excluded here; it
+          # has its own job so a browser problem cannot mask a logic failure.
+          pytest tests/ -q --ignore=tests/test_live_captcha.py
+
+  browser:
+    name: browser-dependent tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[web,dev]"
+
+      - name: install chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: captcha visibility tests
+        run: pytest tests/test_live_captcha.py -q

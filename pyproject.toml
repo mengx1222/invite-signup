@@ -26,3 +26,19 @@ include = ["invitesignup*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Lint scope is deliberately narrow.  `ruff check --select ALL` reports 422
+# issues here, most of them modernisation of typing syntax (Dict -> dict) that
+# would touch every file for no behavioural gain.  These two families catch
+# the things that actually bite: unused or undefined names (F) and syntax /
+# import errors (E9).
+#
+# Widening this is a separate change with its own diff; turning on everything
+# at once would have made the first CI run red for style reasons and taught
+# everyone to ignore it.
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F", "E9"]

@@ -18,8 +18,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from . import ledger as ledger_mod
-from .profile import SiteProfile
 from .probe import probe
 from .runner import run_registration
 from .verdict import decide
